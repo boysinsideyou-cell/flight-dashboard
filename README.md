@@ -65,38 +65,35 @@ Two interchangeable backends serve the **same** `public/index.html` and the **sa
   - `GET /api/callsign?cs=` → adsbdb — airline + origin/destination (1-day).
   - `GET /api/aircraft?hex=` → adsbdb — registration / owner / type / photo (1-day).
   - `GET /api/metar?ids=` → aviationweather.gov (NOAA/AWC) — decoded METAR (5-min).
-- **Cloud (Cloudflare Pages):** the identical proxy lives in `functions/api/*.js` as
-  serverless Pages Functions, using Cloudflare's edge cache (same TTLs).
+- **Cloud (Cloudflare Workers):** the identical proxy lives in `worker.js`, which handles
+  `/api/*` and serves the UI from `./public` via the `ASSETS` binding (Cloudflare's edge
+  cache uses the same TTLs).
 - `public/index.html` — the dashboard UI (vanilla JS, Leaflet via CDN for the map).
 - Client-side, enrichment is cached per aircraft (by hex), so each plane is looked up
   once per session no matter how often the dashboard refreshes.
 
-## Publish to the internet (Cloudflare Pages — free, always-on, HTTPS)
-No build step, no server to keep running. You need a (free) GitHub account and a (free)
-Cloudflare account.
+## Published (Cloudflare Workers — free, always-on, HTTPS)
+**Live:** https://flight-dashboard.jeremy-fancher.workers.dev
 
-1. **Push this folder to a new GitHub repo:**
-   ```powershell
-   git init
-   git add -A
-   git commit -m "Flight dashboard"
-   git branch -M main
-   git remote add origin https://github.com/<you>/flight-dashboard.git
-   git push -u origin main
-   ```
-2. **Connect it in Cloudflare:** dashboard → **Workers & Pages** → **Create** →
-   **Pages** → **Connect to Git** → pick the repo. Build settings:
-   - Framework preset: **None**
-   - Build command: *(leave empty)*
-   - Build output directory: **`public`**
+Deployed via Cloudflare's Workers + static-assets model, connected to the GitHub repo
+`boysinsideyou-cell/flight-dashboard`. There is **no build step** — Cloudflare runs
+`npx wrangler deploy`, which reads `wrangler.toml`:
 
-   Click **Save and Deploy**. Cloudflare auto-detects `functions/` and wires up `/api/*`.
-3. You get a URL like `https://flight-dashboard-xxx.pages.dev`. Because it's HTTPS, the
-   **"Use my location"** button works on phones too. Every `git push` redeploys.
+```toml
+name = "flight-dashboard"
+main = "worker.js"            # handles /api/*
+compatibility_date = "2026-05-31"
+[assets]
+directory = "public"          # the dashboard UI
+binding = "ASSETS"            # worker.js falls back to this for non-/api paths
+```
+
+**Every `git push` to `main` auto-redeploys** — no dashboard steps needed. Because it's
+served over HTTPS, the **"Use my location"** button works on phones too.
 
 > Public + unlisted: the site has **no login** — anyone with the URL can view it and use
 > the proxy. The default map centers on the `HOME` coords baked into `public/index.html`;
-> edit that constant if you'd rather not expose a specific location.
+> edit that constant and push if you'd rather not expose a specific location.
 
 ## Departure / arrival times — not included (and why)
 Scheduled (or estimated) **departure/arrival times are not available** from ADS-B or any
