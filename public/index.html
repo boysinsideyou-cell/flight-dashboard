@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flight Dashboard — nearest aircraft</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root {
+    --bg: #0b0f17;
+    --panel: #131a26;
+    --panel2: #1b2433;
+    --line: #243044;
+    --text: #e6edf6;
+    --muted: #8b9bb4;
+    --accent: #38bdf8;
+    --accent2: #34d399;
+    --warn: #fbbf24;
+    --danger: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    background: radial-gradient(1200px 600px at 70% -10%, #16243a 0%, var(--bg) 55%);
+    color: var(--text); min-height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    padding: 16px 22px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  header h1 span { color: var(--accent); }
+  .status { color: var(--muted); font-size: 13px; margin-left: auto; text-align: right; }
+  .status b { color: var(--text); font-weight: 600; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--muted); margin-right:6px; }
+  .dot.live { background: var(--accent2); box-shadow: 0 0 8px var(--accent2); }
+  .dot.err { background: var(--danger); }
+
+  .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding: 12px 22px; }
+  .controls label { color: var(--muted); font-size: 12px; }
+  .controls input, .controls button {
+    background: var(--panel2); border: 1px solid var(--line); color: var(--text);
+    border-radius: 8px; padding: 7px 10px; font-size: 13px;
+  }
+  .controls input[type=number] { width: 110px; }
+  .controls button { cursor: pointer; }
+  .controls button:hover { border-color: var(--accent); }
+  .controls .primary { background: var(--accent); color: #04121c; border-color: var(--accent); font-weight: 600; }
+
+  main {
+    display: grid; gap: 18px; padding: 18px 22px 40px;
+    grid-template-columns: 1.25fr 1fr;
+    grid-template-areas: "hero state" "radar map" "wx list";
+  }
+  #card-hero  { grid-area: hero; }
+  #card-state { grid-area: state; }
+  #card-radar { grid-area: radar; }
+  #card-map   { grid-area: map; }
+  #card-wx    { grid-area: wx; }
+  #card-list  { grid-area: list; }
+  @media (max-width: 950px) {
+    main { grid-template-columns: 1fr; grid-template-areas: "hero" "state" "radar" "map" "wx" "list"; }
+  }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+  .card h2 { margin: 0 0 14px; font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); display:flex; align-items:center; gap:8px; }
+
+  /* hero */
+  .hero-top { display:flex; align-items:flex-start; gap:18px; }
+  .callsign { font-size: 38px; font-weight: 700; line-height: 1; }
+  .callsign small { display:block; font-size: 13px; color: var(--muted); font-weight: 500; margin-top: 6px; }
+  .airline { margin-top: 8px; font-size: 15px; font-weight: 600; color: var(--text); min-height: 18px; }
+  .route { margin-top: 4px; font-size: 14px; color: var(--accent2); min-height: 18px; }
+  .route .arr { color: var(--muted); margin: 0 6px; }
+  .route .note { color: var(--muted); font-size: 12px; font-weight: 400; }
+
+  .enrich { display:flex; gap:16px; margin-top:18px; align-items:flex-start; }
+  .enrich img { width: 150px; height: 100px; object-fit: cover; border-radius: 10px; border:1px solid var(--line); flex:0 0 auto; background:var(--panel2); }
+  .enrich .meta { font-size: 13px; line-height: 1.7; }
+  .enrich .meta .row span { color: var(--muted); display:inline-block; min-width: 92px; }
+  .enrich .meta .row b { font-weight: 600; }
+  .compass {
+    margin-left: auto; width: 110px; height: 110px; border-radius: 50%;
+    border: 2px solid var(--line); position: relative; flex: 0 0 auto;
+    background: radial-gradient(circle at center, #0e1623 0%, #0a0f18 100%);
+  }
+  .compass .lbl { position:absolute; top:-20px; left:0; right:0; text-align:center; font-size:10px; color:var(--muted); }
+  .compass .n { position:absolute; top:4px; left:50%; transform:translateX(-50%); font-size:11px; color:var(--muted); }
+  .arrow {
+    position:absolute; top:50%; left:50%; width:0; height:0;
+    border-left: 8px solid transparent; border-right: 8px solid transparent;
+    border-bottom: 42px solid var(--accent);
+    transform-origin: 50% 100%; transform: translate(-50%, -100%) rotate(0deg);
+    transition: transform .6s ease;
+  }
+  .compass .deg { position:absolute; bottom:8px; left:50%; transform:translateX(-50%); font-size:12px; color:var(--text); }
+
+  .grid { display:grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 20px; }
+  .stat { background: var(--panel2); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .stat .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing:.6px; }
+  .stat .v { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  .stat .v small { font-size: 12px; color: var(--muted); font-weight:500; }
+  .up { color: var(--accent2); } .down { color: var(--warn); }
+  .hero a.track { display:inline-block; margin-top:16px; color:var(--accent); font-size:13px; text-decoration:none; }
+  .hero a.track:hover { text-decoration: underline; }
+
+  /* state instrument panel */
+  .phase-pill { margin-left:auto; font-size:11px; padding:3px 10px; border-radius:20px; font-weight:700; letter-spacing:.5px; }
+  .ph-ground { background:#28323f; color:var(--muted); }
+  .ph-climb  { background:rgba(52,211,153,.15); color:var(--accent2); }
+  .ph-cruise { background:rgba(56,189,248,.15); color:var(--accent); }
+  .ph-descent{ background:rgba(251,191,36,.15); color:var(--warn); }
+  .instrument { display:flex; justify-content:center; align-items:center; }
+
+  /* radar */
+  .radar-wrap { display:flex; justify-content:center; }
+  #radar { width: 360px; max-width: 100%; height: 360px; }
+
+  /* weather / METAR */
+  .wx-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  .wx-cat { font-size:11px; font-weight:700; letter-spacing:.5px; padding:3px 9px; border-radius:6px; }
+  .cat-VFR  { background:rgba(52,211,153,.18); color:var(--accent2); }
+  .cat-MVFR { background:rgba(56,189,248,.18); color:var(--accent); }
+  .cat-IFR  { background:rgba(248,113,113,.18); color:var(--danger); }
+  .cat-LIFR { background:rgba(217,70,239,.20); color:#e879f9; }
+  .wx-station { font-weight:600; }
+  .wx-obs { color:var(--muted); font-size:12px; margin-left:auto; }
+  .wx-grid { display:grid; grid-template-columns: repeat(2,1fr); gap:10px 18px; margin-top:10px; }
+  .wx-grid .k { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+  .wx-grid .v { font-size:16px; font-weight:600; margin-top:2px; }
+  .wx-raw { margin-top:14px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size:12px; color:var(--muted); background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px 10px; word-break:break-all; }
+  .wx-station-input { background:var(--panel2); border:1px solid var(--line); color:var(--text); border-radius:6px; padding:3px 7px; font-size:12px; width:72px; text-transform:uppercase; }
+
+  /* map */
+  #map { height: 380px; border-radius: 10px; overflow:hidden; }
+  .leaflet-container { background:#0a0f18; }
+  .plane-ico svg { display:block; filter: drop-shadow(0 0 2px rgba(0,0,0,.6)); }
+
+  /* table */
+  table { width:100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight:600; font-size: 11px; text-transform: uppercase; letter-spacing:.5px; }
+  tbody tr { cursor: default; }
+  tbody tr:hover { background: var(--panel2); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pill { font-size:11px; padding:2px 7px; border-radius:20px; background:var(--panel2); border:1px solid var(--line); color:var(--muted); }
+  .empty { color: var(--muted); padding: 24px 0; text-align:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>✈ Flight <span>Dashboard</span></h1>
+  <div class="status">
+    <div><span id="livedot" class="dot"></span><span id="statusText">starting…</span></div>
+    <div id="locText" style="margin-top:3px;"></div>
+  </div>
+</header>
+
+<div class="controls">
+  <button id="useLoc" class="primary">📍 Use my location</button>
+  <button id="useHome">🏠 Home</button>
+  <label>Lat <input id="lat" type="number" step="0.0001" placeholder="32.7262"></label>
+  <label>Lon <input id="lon" type="number" step="0.0001" placeholder="-117.1262"></label>
+  <label>Radius (nm) <input id="radius" type="number" min="1" max="250" value="50"></label>
+  <button id="apply">Apply</button>
+  <label style="margin-left:8px;">Refresh <input id="interval" type="number" min="3" max="120" value="10" style="width:70px;"> s</label>
+  <label style="margin-left:8px; display:inline-flex; align-items:center; gap:6px;">
+    <input id="airborneOnly" type="checkbox" checked style="width:auto;"> Airborne only
+  </label>
+  <label style="display:inline-flex; align-items:center; gap:6px;">
+    min gs <input id="minGs" type="number" min="0" max="600" value="0" style="width:64px;"> kt
+  </label>
+</div>
+
+<main>
+  <section class="card hero" id="card-hero">
+    <h2>Closest aircraft</h2>
+    <div id="heroBody"><div class="empty">Waiting for a fix…</div></div>
+  </section>
+
+  <section class="card" id="card-state">
+    <h2>State <span id="phasePill"></span></h2>
+    <div id="stateBody"><div class="empty">—</div></div>
+  </section>
+
+  <section class="card" id="card-radar">
+    <h2>Radar scope <span id="radarRange" class="phase-pill ph-cruise"></span></h2>
+    <div class="radar-wrap"><canvas id="radar" width="360" height="360"></canvas></div>
+  </section>
+
+  <section class="card" id="card-wx">
+    <h2>Weather · METAR <input id="wxStation" class="wx-station-input" value="KSAN" maxlength="4" title="ICAO station id"></h2>
+    <div id="wxBody"><div class="empty">—</div></div>
+  </section>
+
+  <section class="card" id="card-map">
+    <h2>Map</h2>
+    <div id="map"></div>
+  </section>
+
+  <section class="card" id="card-list">
+    <h2>Nearby (by distance)</h2>
+    <div id="listBody"><div class="empty">—</div></div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+// Default home location (1943 Edgemont St, San Diego — ~4.5 nm ENE of SAN).
+const HOME = { lat: 32.7262, lon: -117.1262 };
+let state = {
+  lat: null, lon: null, radius: 50, intervalSec: 10,
+  airborneOnly: true, minGs: 0,
+  metarStation: "KSAN",
+  timer: null, metarTimer: null, lastClosestHex: null,
+  map: null, youMarker: null, acLayer: null,
+};
+
+// ---- persistence ----
+try {
+  const saved = JSON.parse(localStorage.getItem("flightdash") || "{}");
+  if (saved.lat != null) { state.lat = saved.lat; $("lat").value = saved.lat; }
+  if (saved.lon != null) { state.lon = saved.lon; $("lon").value = saved.lon; }
+  if (saved.radius) { state.radius = saved.radius; $("radius").value = saved.radius; }
+  if (saved.intervalSec) { state.intervalSec = saved.intervalSec; $("interval").value = saved.intervalSec; }
+  if (saved.airborneOnly != null) { state.airborneOnly = saved.airborneOnly; $("airborneOnly").checked = saved.airborneOnly; }
+  if (saved.minGs != null) { state.minGs = saved.minGs; $("minGs").value = saved.minGs; }
+  if (saved.metarStation) { state.metarStation = saved.metarStation; $("wxStation").value = saved.metarStation; }
+} catch (e) {}
+function persist() {
+  localStorage.setItem("flightdash", JSON.stringify({
+    lat: state.lat, lon: state.lon, radius: state.radius, intervalSec: state.intervalSec,
+    airborneOnly: state.airborneOnly, minGs: state.minGs, metarStation: state.metarStation
+  }));
+}
+
+// ---- helpers ----
+const NM_TO_MI = 1.15078;
+const COMPASS = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+function bearingName(d){ return COMPASS[Math.round(((d%360)/22.5))%16]; }
+function fmtAlt(a){
+  if (a === "ground") return {v:"GROUND", s:""};
+  if (a == null) return {v:"—", s:""};
+  return {v: a.toLocaleString(), s:"ft"};
+}
+function setStatus(text, cls){
+  $("statusText").textContent = text;
+  $("livedot").className = "dot" + (cls ? " "+cls : "");
+}
+function heading(a){ return a.track ?? a.true_heading ?? a.mag_heading ?? null; }
+function vrate(a){ const r = a.baro_rate ?? a.geom_rate; return typeof r === "number" ? r : null; }
+function passesFilter(a){
+  // Drop parked/taxiing ground traffic (SAN ramp jets still squawk ADS-B).
+  if (state.airborneOnly && a.alt_baro === "ground") return false;
+  if (state.minGs > 0 && (a.gs == null || a.gs < state.minGs)) return false;
+  return true;
+}
+function phaseOf(a){
+  if (a.alt_baro === "ground") return "ground";
+  const r = vrate(a);
+  if (r != null && r > 300) return "climb";
+  if (r != null && r < -300) return "descent";
+  return "cruise";
+}
+
+// ---- main fetch ----
+async function tick(){
+  if (state.lat == null || state.lon == null) return;
+  try {
+    const r = await fetch(`/api/nearby?lat=${state.lat}&lon=${state.lon}&radius=${state.radius}`);
+    const data = await r.json();
+    if (data.error) { setStatus("API: "+data.error, "err"); return; }
+    let ac = (data.ac || []).filter(a => a.lat != null).sort((x,y)=>(x.dst??1e9)-(y.dst??1e9));
+    const total = ac.length;
+    ac = ac.filter(passesFilter);
+    render(ac);
+    const t = new Date().toLocaleTimeString();
+    const desc = (state.airborneOnly || state.minGs > 0)
+      ? `${ac.length} shown / ${total} total` : `${ac.length} aircraft`;
+    setStatus(`live · ${desc} · ${t}`, "live");
+  } catch (e) {
+    setStatus("fetch failed: " + e.message, "err");
+  }
+}
+
+function render(ac){
+  radar.setData(ac, ac[0]);
+  $("radarRange").textContent = (state.radius||50) + " nm";
+  renderMap(ac, ac[0]);
+  if (!ac.length){
+    const why = state.airborneOnly ? "airborne aircraft" : "aircraft";
+    $("heroBody").innerHTML = `<div class="empty">No ${why} within ${state.radius} nm right now.${state.airborneOnly ? "<br><small>Parked/taxiing traffic is hidden — untick “Airborne only” to see it.</small>" : ""}</div>`;
+    $("stateBody").innerHTML = `<div class="empty">—</div>`;
+    $("phasePill").className = ""; $("phasePill").textContent = "";
+    $("listBody").innerHTML = `<div class="empty">—</div>`;
+    return;
+  }
+  renderHero(ac[0]);
+  renderState(ac[0]);
+  renderList(ac);
+}
+
+function renderHero(a){
+  const cs = (a.flight || "").trim() || a.r || a.hex;
+  const alt = fmtAlt(a.alt_baro);
+  const rate = vrate(a);
+  let trend = "";
+  if (rate != null && Math.abs(rate) >= 64){
+    trend = rate > 0 ? `<span class="up">▲ ${rate} fpm</span>` : `<span class="down">▼ ${Math.abs(rate)} fpm</span>`;
+  }
+  const distMi = a.dst != null ? (a.dst*NM_TO_MI).toFixed(1) : "—";
+  const dir = a.dir != null ? Math.round(a.dir) : null;
+  const hdg = heading(a);
+  state.lastClosestHex = a.hex;
+
+  $("heroBody").innerHTML = `
+    <div class="hero-top">
+      <div>
+        <div class="callsign">${cs}<small>${a.t || "unknown type"} · ${a.r || "reg —"} · ${a.hex}</small></div>
+        <div class="airline" id="airline"></div>
+        <div class="route" id="route"></div>
+      </div>
+      <div class="compass" title="Direction from you to the aircraft">
+        <div class="lbl">look toward</div>
+        <div class="n">N</div>
+        <div class="arrow" style="transform: translate(-50%,-100%) rotate(${dir!=null?dir:0}deg)"></div>
+        <div class="deg">${dir!=null ? dir+"° "+bearingName(dir) : "—"}</div>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="stat"><div class="k">Distance</div><div class="v">${a.dst!=null?a.dst.toFixed(1):"—"} <small>nm / ${distMi} mi</small></div></div>
+      <div class="stat"><div class="k">Altitude</div><div class="v">${alt.v} <small>${alt.s} ${trend}</small></div></div>
+      <div class="stat"><div class="k">Ground speed</div><div class="v">${a.gs!=null?Math.round(a.gs):"—"} <small>kt</small></div></div>
+      <div class="stat"><div class="k">Heading</div><div class="v">${hdg!=null?Math.round(hdg):"—"}<small>°</small></div></div>
+      <div class="stat"><div class="k">Squawk</div><div class="v">${a.squawk || "—"}</div></div>
+      <div class="stat"><div class="k">Signal</div><div class="v">${a.rssi!=null?a.rssi:"—"}<small> dBFS</small></div></div>
+    </div>
+    <div class="enrich" id="enrich"></div>
+    <a class="track" href="https://globe.adsb.lol/?icao=${a.hex}" target="_blank" rel="noopener">Open on live map ↗</a>
+  `;
+  enrichClosest(a, cs);
+}
+
+// ---- human-readable enrichment: airline, route, owner, photo (adsbdb) ----
+const enrichCache = {};   // hex -> {airline, route, ac}
+function airportLabel(ap){
+  if (!ap) return null;
+  const code = ap.iata_code || ap.icao_code || "";
+  const city = (ap.municipality || ap.name || "").split(",")[0];
+  return { code, city, full: `${city || ap.name || code}` };
+}
+async function enrichClosest(a, cs){
+  const hex = a.hex;
+  if (enrichCache[hex]) return paintEnrich(enrichCache[hex]);
+  const rec = { airline:null, route:null, ac:null };
+  enrichCache[hex] = rec;  // reserve so we don't double-fetch
+  // Aircraft (owner / manufacturer / type / photo) — keyed by hex.
+  try {
+    const r = await fetch(`/api/aircraft?hex=${encodeURIComponent(hex)}`);
+    const d = await r.json();
+    if (d.response && d.response.aircraft) rec.ac = d.response.aircraft;
+  } catch (e) {}
+  // Airline + route — keyed by callsign.
+  if (cs && cs !== hex){
+    try {
+      const r = await fetch(`/api/callsign?cs=${encodeURIComponent(cs.trim())}`);
+      const d = await r.json();
+      if (d.response && d.response.flightroute){
+        const fr = d.response.flightroute;
+        rec.airline = fr.airline ? fr.airline.name : null;
+        rec.route = { from: airportLabel(fr.origin), to: airportLabel(fr.destination) };
+      }
+    } catch (e) {}
+  }
+  // Only paint if this is still the displayed aircraft.
+  if (state.lastClosestHex === hex) paintEnrich(rec);
+}
+function paintEnrich(rec){
+  const al = $("airline"), ro = $("route"), en = $("enrich");
+  if (!al || !ro || !en) return;
+  al.textContent = rec.airline || "";
+  if (rec.route && (rec.route.from || rec.route.to)){
+    const f = rec.route.from, t = rec.route.to;
+    ro.innerHTML = `${f ? `<b>${f.code}</b> ${f.city}` : "—"}<span class="arr">→</span>${t ? `<b>${t.code}</b> ${t.city}` : "—"}`
+      + ` <span class="note">· sched. times need a flight API (see README)</span>`;
+  } else {
+    ro.innerHTML = `<span class="note">No route on file for this callsign.</span>`;
+  }
+  const ac = rec.ac;
+  if (ac){
+    const owner = ac.registered_owner || "—";
+    const make = [ac.manufacturer, ac.type].filter(Boolean).join(" ");
+    const country = ac.registered_owner_country_name || "";
+    const photo = ac.url_photo_thumbnail || ac.url_photo;
+    en.innerHTML =
+      (photo ? `<a href="${ac.url_photo||photo}" target="_blank" rel="noopener"><img src="${photo}" alt="aircraft photo" onerror="this.style.display='none'"></a>` : "") +
+      `<div class="meta">
+        <div class="row"><span>Operator</span><b>${owner}</b></div>
+        <div class="row"><span>Aircraft</span><b>${make || ac.icao_type || "—"}</b></div>
+        <div class="row"><span>Registration</span><b>${ac.registration || "—"}</b></div>
+        <div class="row"><span>Registered in</span><b>${country || "—"}</b></div>
+      </div>`;
+  } else {
+    en.innerHTML = `<div class="meta"><div class="row"><span>Aircraft</span><b>No registry record</b></div></div>`;
+  }
+}
+
+// ---- "orienting" instrument panel: heading dial + altitude tape ----
+function renderState(a){
+  const phase = phaseOf(a);
+  const pmap = {ground:["ph-ground","ON GROUND"], climb:["ph-climb","CLIMB"], cruise:["ph-cruise","CRUISE"], descent:["ph-descent","DESCENT"]};
+  $("phasePill").className = "phase-pill " + pmap[phase][0];
+  $("phasePill").textContent = pmap[phase][1];
+
+  const hdg = heading(a) ?? 0;
+  const alt = a.alt_baro === "ground" ? 0 : (typeof a.alt_baro === "number" ? a.alt_baro : 0);
+  const rate = vrate(a) ?? 0;
+  const MAXALT = 45000;
+  const tapeTop = 24, tapeBot = 196, tapeH = tapeBot - tapeTop;
+  const altY = tapeBot - Math.max(0, Math.min(1, alt/MAXALT)) * tapeH;
+  const planeColor = phase==="ground" ? "#8b9bb4" : "#38bdf8";
+  const altColor = rate>300 ? "#34d399" : rate<-300 ? "#fbbf24" : "#e6edf6";
+  const rateTxt = rate>=64 ? `▲ ${rate}` : rate<=-64 ? `▼ ${Math.abs(rate)}` : "level";
+
+  // top-down plane silhouette, points up (north) by default, rotated to heading
+  const planePath = "M0,-30 L5,-12 L5,-6 L26,6 L26,12 L5,7 L5,20 L12,27 L12,31 L0,27 L-12,31 L-12,27 L-5,20 L-5,7 L-26,12 L-26,6 L-5,-6 L-5,-12 Z";
+
+  $("stateBody").innerHTML = `
+  <div class="instrument">
+    <svg viewBox="0 0 320 210" width="100%" style="max-width:420px">
+      <!-- heading dial -->
+      <g transform="translate(105,105)">
+        <circle r="92" fill="#0a0f18" stroke="#243044" stroke-width="2"/>
+        <circle r="92" fill="none" stroke="#1b2433" stroke-width="14" opacity=".5"/>
+        ${[0,45,90,135,180,225,270,315].map(d=>{
+          const rad=(d-90)*Math.PI/180, x1=Math.cos(rad)*92, y1=Math.sin(rad)*92, x2=Math.cos(rad)*82, y2=Math.sin(rad)*82;
+          return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#33415a" stroke-width="2"/>`;
+        }).join("")}
+        <text x="0" y="-70" fill="#8b9bb4" font-size="13" text-anchor="middle" font-weight="700">N</text>
+        <text x="74" y="5" fill="#56627a" font-size="12" text-anchor="middle">E</text>
+        <text x="0" y="82" fill="#56627a" font-size="12" text-anchor="middle">S</text>
+        <text x="-74" y="5" fill="#56627a" font-size="12" text-anchor="middle">W</text>
+        <g transform="rotate(${hdg})" style="transition:transform .6s ease">
+          <path d="${planePath}" fill="${planeColor}" stroke="#04121c" stroke-width="1.5" stroke-linejoin="round"/>
+        </g>
+      </g>
+      <text x="105" y="200" fill="#8b9bb4" font-size="12" text-anchor="middle">HDG ${Math.round(hdg)}°</text>
+
+      <!-- altitude tape -->
+      <g transform="translate(250,0)">
+        <rect x="14" y="${tapeTop}" width="14" height="${tapeH}" rx="7" fill="#0a0f18" stroke="#243044"/>
+        <rect x="14" y="${altY.toFixed(1)}" width="14" height="${(tapeBot-altY).toFixed(1)}" rx="7" fill="${altColor}" opacity=".35"/>
+        <line x1="6" y1="${altY.toFixed(1)}" x2="36" y2="${altY.toFixed(1)}" stroke="${altColor}" stroke-width="2"/>
+        ${[0,10000,20000,30000,40000].map(t=>{
+          const y=tapeBot - (t/MAXALT)*tapeH;
+          return `<text x="44" y="${(y+4).toFixed(1)}" fill="#56627a" font-size="9">${t/1000|0}k</text>`;
+        }).join("")}
+        <text x="21" y="14" fill="${altColor}" font-size="13" text-anchor="middle" font-weight="700">${alt? (alt/1000).toFixed(1)+"k":"GND"}</text>
+        <text x="21" y="208" fill="#8b9bb4" font-size="10" text-anchor="middle">${rateTxt} fpm</text>
+      </g>
+    </svg>
+  </div>`;
+}
+
+// ---- METAR weather, decoded into plain English ----
+const CLOUD = {SKC:"Clear",CLR:"Clear",NSC:"Clear",NCD:"Clear",FEW:"Few clouds",SCT:"Scattered",BKN:"Broken",OVC:"Overcast",OVX:"Obscured"};
+function fmtWind(m){
+  if (m.wspd == null || m.wspd === 0) return "Calm";
+  const dir = (m.wdir == null) ? "—" : (m.wdir === 0 ? "Variable" : `${m.wdir}° ${bearingName(m.wdir)}`);
+  let s = `${dir} at ${m.wspd} kt`;
+  if (m.wgst) s += `, gusts ${m.wgst}`;
+  return s;
+}
+function fmtClouds(m){
+  const cs = m.clouds || [];
+  const layers = cs.filter(c => c.base != null && !["CLR","SKC","NSC","NCD"].includes(c.cover))
+                   .map(c => `${CLOUD[c.cover] || c.cover} at ${c.base.toLocaleString()} ft`);
+  if (layers.length) return layers.join("; ");
+  return "Clear";
+}
+function cToF(c){ return c == null ? null : Math.round(c*9/5 + 32); }
+function relTime(iso){
+  if (!iso) return "";
+  const min = Math.round((Date.now() - new Date(iso)) / 60000);
+  return min < 1 ? "just now" : (min < 90 ? `${min} min ago` : `${Math.round(min/60)} h ago`);
+}
+function relHumidity(m){
+  if (m.temp == null || m.dewp == null) return "—";
+  const T = m.temp, Td = m.dewp;
+  const r = 100 * Math.exp((17.625*Td/(243.04+Td)) - (17.625*T/(243.04+T)));
+  return Math.round(r) + "%";
+}
+function renderMetar(m){
+  const cat = m.fltCat || "—";
+  const catTitle = {VFR:"Visual conditions", MVFR:"Marginal visual", IFR:"Instrument conditions", LIFR:"Low instrument"}[cat] || "";
+  $("wxBody").innerHTML = `
+    <div class="wx-head">
+      <span class="wx-cat cat-${cat}" title="${catTitle}">${cat}</span>
+      <span class="wx-station">${m.name || m.icaoId || state.metarStation}</span>
+      <span class="wx-obs">${relTime(m.reportTime)}</span>
+    </div>
+    <div class="wx-grid">
+      <div><div class="k">Wind</div><div class="v">${fmtWind(m)}</div></div>
+      <div><div class="k">Visibility</div><div class="v">${m.visib != null ? m.visib + " sm" : "—"}</div></div>
+      <div><div class="k">Sky</div><div class="v">${fmtClouds(m)}</div></div>
+      <div><div class="k">Temperature</div><div class="v">${m.temp != null ? Math.round(m.temp)+"°C / "+cToF(m.temp)+"°F" : "—"}</div></div>
+      <div><div class="k">Dewpoint · Humidity</div><div class="v">${m.dewp != null ? Math.round(m.dewp)+"°C" : "—"} <small>· ${relHumidity(m)}</small></div></div>
+      <div><div class="k">Altimeter</div><div class="v">${m.altim != null ? (m.altim*0.0295300).toFixed(2)+'" Hg' : "—"}</div></div>
+    </div>
+    <div class="wx-raw">${m.rawOb || ""}</div>`;
+}
+async function refreshMetar(){
+  const st = state.metarStation;
+  if (!st) return;
+  try {
+    const r = await fetch(`/api/metar?ids=${encodeURIComponent(st)}`);
+    const d = await r.json();
+    const m = Array.isArray(d) && d.length ? d[0] : null;
+    if (m) renderMetar(m);
+    else $("wxBody").innerHTML = `<div class="empty">No METAR for ${st}. Use an ICAO id (e.g. KSAN, KLAX).</div>`;
+  } catch (e) {
+    $("wxBody").innerHTML = `<div class="empty">Weather fetch failed.</div>`;
+  }
+}
+
+// ---- radar scope (canvas) — also the prototype for the LED matrix board ----
+const radar = {
+  cv:null, ctx:null, size:360, dpr:1, ac:[], top:null, sweep:0, started:false,
+  init(){
+    this.cv = $("radar"); if (!this.cv) return;
+    this.ctx = this.cv.getContext("2d");
+    this.dpr = window.devicePixelRatio || 1;
+    this.size = this.cv.clientWidth || 360;
+    this.cv.width = this.size * this.dpr;
+    this.cv.height = this.size * this.dpr;
+    this.ctx.scale(this.dpr, this.dpr);
+  },
+  setData(ac, top){ this.ac = ac || []; this.top = top || null; },
+  start(){ if (this.started) return; this.started = true; const loop = () => { this.draw(); requestAnimationFrame(loop); }; loop(); },
+  draw(){
+    if (!this.ctx) return;
+    const ctx = this.ctx, S = this.size, cx = S/2, cy = S/2, R = S/2 - 16;
+    const range = state.radius || 50;
+    ctx.clearRect(0, 0, S, S);
+
+    // backdrop
+    ctx.fillStyle = "#0a0f18"; ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI*2); ctx.fill();
+
+    // range rings + labels
+    const rings = 4;
+    ctx.font = "10px Segoe UI"; ctx.textAlign = "left";
+    for (let i = 1; i <= rings; i++){
+      const rr = R * i / rings;
+      ctx.strokeStyle = i === rings ? "#33415a" : "#1b2433"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI*2); ctx.stroke();
+      const nm = range * i / rings;
+      ctx.fillStyle = "#56627a";
+      ctx.fillText((nm < 10 ? nm.toFixed(1) : Math.round(nm)) + " nm", cx + 3, cy - rr + 11);
+    }
+
+    // crosshairs + cardinals
+    ctx.strokeStyle = "#1b2433"; ctx.lineWidth = 1; ctx.beginPath();
+    ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+    ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R); ctx.stroke();
+    ctx.fillStyle = "#8b9bb4"; ctx.textAlign = "center"; ctx.font = "11px Segoe UI";
+    ctx.fillText("N", cx, cy - R + 11); ctx.fillText("S", cx, cy + R - 3);
+    ctx.fillText("E", cx + R - 7, cy + 4); ctx.fillText("W", cx - R + 7, cy + 4);
+
+    // rotating sweep
+    this.sweep += 0.018; if (this.sweep > Math.PI*2) this.sweep -= Math.PI*2;
+    ctx.save(); ctx.translate(cx, cy);
+    const g = ctx.createRadialGradient(0,0,0, 0,0,R);
+    g.addColorStop(0, "rgba(56,189,248,0.22)"); g.addColorStop(1, "rgba(56,189,248,0)");
+    ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0,0);
+    ctx.arc(0, 0, R, this.sweep - 0.5, this.sweep); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = "rgba(56,189,248,0.55)"; ctx.lineWidth = 1.5; ctx.beginPath();
+    ctx.moveTo(0,0); ctx.lineTo(Math.cos(this.sweep)*R, Math.sin(this.sweep)*R); ctx.stroke();
+    ctx.restore();
+
+    // you
+    ctx.fillStyle = "#38bdf8"; ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI*2); ctx.fill();
+
+    // aircraft: bearing (dir, 0=N up) + distance (dst, nm)
+    this.ac.forEach(a => {
+      if (a.dst == null || a.dir == null || a.dst > range) return;
+      const rr = (a.dst / range) * R;
+      const b = a.dir * Math.PI/180;
+      const x = cx + Math.sin(b) * rr;
+      const y = cy - Math.cos(b) * rr;
+      const isTop = this.top && a.hex === this.top.hex;
+      const onGround = a.alt_baro === "ground";
+      const color = isTop ? "#38bdf8" : (onGround ? "#8b9bb4" : "#34d399");
+
+      // heading tick
+      const hdg = heading(a);
+      if (hdg != null){
+        const t = hdg * Math.PI/180;
+        ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.beginPath();
+        ctx.moveTo(x, y); ctx.lineTo(x + Math.sin(t)*10, y - Math.cos(t)*10); ctx.stroke();
+      }
+      // blip
+      ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x, y, isTop ? 5 : 3.2, 0, Math.PI*2); ctx.fill();
+      if (isTop){
+        ctx.strokeStyle = "rgba(56,189,248,0.6)"; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI*2); ctx.stroke();
+        ctx.fillStyle = "#e6edf6"; ctx.font = "11px Segoe UI"; ctx.textAlign = "left";
+        ctx.fillText((a.flight||"").trim() || a.hex, x + 12, y + 4);
+      }
+    });
+  }
+};
+
+// ---- map ----
+function zoomForRadius(r){ return r<=10?10 : r<=25?9 : r<=50?8 : r<=100?7 : 6; }
+function planeIcon(hdg, color, big){
+  const s = big ? 26 : 20;
+  return L.divIcon({
+    className: "plane-ico",
+    html: `<svg width="${s}" height="${s}" viewBox="-30 -32 60 64" style="transform:rotate(${hdg}deg)">
+      <path d="M0,-30 L5,-12 L5,-6 L26,6 L26,12 L5,7 L5,20 L12,27 L12,31 L0,27 L-12,31 L-12,27 L-5,20 L-5,7 L-26,12 L-26,6 L-5,-6 L-5,-12 Z"
+        fill="${color}" stroke="#04121c" stroke-width="2" stroke-linejoin="round"/></svg>`,
+    iconSize: [s, s], iconAnchor: [s/2, s/2],
+  });
+}
+function renderMap(ac, top){
+  if (typeof L === "undefined"){ $("map").innerHTML = "<div class='empty'>Map library didn't load (offline?). Everything else still works.</div>"; return; }
+  if (!state.map){
+    state.map = L.map("map", { zoomControl:true, attributionControl:false })
+      .setView([state.lat, state.lon], zoomForRadius(state.radius));
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { maxZoom:19, subdomains:"abcd" }).addTo(state.map);
+    state.acLayer = L.layerGroup().addTo(state.map);
+    state.youMarker = L.circleMarker([state.lat, state.lon],
+      { radius:6, color:"#38bdf8", weight:2, fillColor:"#38bdf8", fillOpacity:1 })
+      .addTo(state.map).bindTooltip("You", {permanent:false});
+    setTimeout(()=>state.map.invalidateSize(), 200);
+  } else {
+    state.youMarker.setLatLng([state.lat, state.lon]);
+  }
+  state.acLayer.clearLayers();
+  (ac||[]).forEach(a=>{
+    const isTop = top && a.hex === top.hex;
+    const hdg = heading(a) ?? 0;
+    const color = isTop ? "#38bdf8" : (a.alt_baro==="ground" ? "#8b9bb4" : "#34d399");
+    const cs = (a.flight||"").trim() || a.hex;
+    const altLbl = a.alt_baro==="ground" ? "GND" : (a.alt_baro!=null ? a.alt_baro.toLocaleString()+" ft" : "—");
+    L.marker([a.lat, a.lon], { icon: planeIcon(hdg, color, isTop), zIndexOffset: isTop?1000:0 })
+      .bindTooltip(`${cs} · ${altLbl}`, {direction:"top"})
+      .addTo(state.acLayer);
+  });
+}
+
+function renderList(ac){
+  const rows = ac.slice(0, 12).map(a => {
+    const cs = (a.flight||"").trim() || a.r || a.hex;
+    const alt = a.alt_baro === "ground" ? "GND" : (a.alt_baro!=null ? a.alt_baro.toLocaleString() : "—");
+    return `<tr>
+      <td>${cs}</td>
+      <td><span class="pill">${a.t||"—"}</span></td>
+      <td class="num">${a.dst!=null?a.dst.toFixed(1):"—"}</td>
+      <td class="num">${a.dir!=null?Math.round(a.dir)+"° "+bearingName(a.dir):"—"}</td>
+      <td class="num">${alt}</td>
+      <td class="num">${a.gs!=null?Math.round(a.gs):"—"}</td>
+    </tr>`;
+  }).join("");
+  $("listBody").innerHTML = `
+    <table>
+      <thead><tr><th>Flight</th><th>Type</th><th>Dist (nm)</th><th>Bearing</th><th>Alt (ft)</th><th>Spd (kt)</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
+// ---- scheduling ----
+function restart(){
+  if (state.timer) clearInterval(state.timer);
+  tick();
+  state.timer = setInterval(tick, state.intervalSec * 1000);
+}
+
+// ---- controls ----
+$("useLoc").onclick = () => {
+  if (!navigator.geolocation){ setStatus("geolocation unavailable", "err"); return; }
+  setStatus("locating…");
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      state.lat = +pos.coords.latitude.toFixed(4);
+      state.lon = +pos.coords.longitude.toFixed(4);
+      $("lat").value = state.lat; $("lon").value = state.lon;
+      $("locText").innerHTML = `<span class="dot live"></span>your location: <b>${state.lat}, ${state.lon}</b>`;
+      if (state.map) state.map.setView([state.lat, state.lon], zoomForRadius(state.radius));
+      persist(); restart();
+    },
+    err => setStatus("location denied — enter coords manually", "err"),
+    { enableHighAccuracy: false, timeout: 10000 }
+  );
+};
+$("useHome").onclick = () => {
+  state.lat = HOME.lat; state.lon = HOME.lon;
+  $("lat").value = HOME.lat; $("lon").value = HOME.lon;
+  $("locText").innerHTML = `<span class="dot live"></span>watching: <b>${state.lat}, ${state.lon}</b> (home)`;
+  if (state.map) state.map.setView([state.lat, state.lon], zoomForRadius(state.radius));
+  persist(); restart();
+};
+$("airborneOnly").onchange = () => { state.airborneOnly = $("airborneOnly").checked; persist(); tick(); };
+$("minGs").onchange = () => { state.minGs = Math.max(0, Math.min(600, parseInt($("minGs").value)||0)); persist(); tick(); };
+$("wxStation").onchange = () => {
+  state.metarStation = ($("wxStation").value || "").trim().toUpperCase();
+  $("wxStation").value = state.metarStation;
+  persist(); refreshMetar();
+};
+$("apply").onclick = () => {
+  const la = parseFloat($("lat").value), lo = parseFloat($("lon").value);
+  if (Number.isFinite(la) && Number.isFinite(lo)){ state.lat = la; state.lon = lo; }
+  state.radius = Math.max(1, Math.min(250, parseInt($("radius").value)||50));
+  state.intervalSec = Math.max(3, Math.min(120, parseInt($("interval").value)||10));
+  state.airborneOnly = $("airborneOnly").checked;
+  state.minGs = Math.max(0, Math.min(600, parseInt($("minGs").value)||0));
+  $("locText").innerHTML = `<span class="dot live"></span>watching: <b>${state.lat}, ${state.lon}</b>`;
+  if (state.map) state.map.setView([state.lat, state.lon], zoomForRadius(state.radius));
+  persist(); restart();
+};
+
+// ---- boot ----
+radar.init(); radar.start();
+refreshMetar();
+state.metarTimer = setInterval(refreshMetar, 300000);  // METAR updates ~hourly
+// Default to HOME when this client has no saved location — so every device
+// (including phones over http, where geolocation is blocked) loads data at once.
+let atHome = false;
+if (state.lat == null || state.lon == null){ state.lat = HOME.lat; state.lon = HOME.lon; atHome = true; }
+$("lat").value = state.lat; $("lon").value = state.lon;
+$("locText").innerHTML = `<span class="dot live"></span>watching: <b>${state.lat}, ${state.lon}</b>${atHome ? " (home)" : ""}`;
+restart();
+</script>
+</body>
+</html>

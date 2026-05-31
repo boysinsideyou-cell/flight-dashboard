@@ -1,0 +1,5 @@
+# Cloudflare Pages config. The dashboard UI is the static site in ./public,
+# and ./functions/api/*.js are the serverless proxy endpoints.
+name = "flight-dashboard"
+pages_build_output_dir = "public"
+compatibility_date = "2024-11-01"
