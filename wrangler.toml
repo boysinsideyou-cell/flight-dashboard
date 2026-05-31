@@ -1,0 +1,9 @@
+# Cloudflare Workers config (Workers + static-assets model).
+# The Worker (worker.js) handles /api/*; static files are served from ./public.
+name = "flight-dashboard"
+main = "worker.js"
+compatibility_date = "2026-05-31"
+
+[assets]
+directory = "public"
+binding = "ASSETS"
