@@ -112,6 +112,18 @@
   .ph-cruise { background:rgba(56,189,248,.15); color:var(--accent); }
   .ph-descent{ background:rgba(251,191,36,.15); color:var(--warn); }
   .instrument { display:flex; justify-content:center; align-items:center; }
+  /* big, prominent flight-phase banner */
+  .phase-big { display:flex; align-items:center; justify-content:center; gap:12px;
+    font-size:40px; font-weight:800; letter-spacing:1.5px; line-height:1;
+    margin:4px 0 16px; text-transform:uppercase; }
+  .phase-big .ic { font-size:32px; }
+  .phase-big.ground  { color: var(--muted); }
+  .phase-big.climb   { color: var(--accent2); text-shadow:0 0 18px rgba(52,211,153,.35); }
+  .phase-big.cruise  { color: var(--accent);  text-shadow:0 0 18px rgba(56,189,248,.30); }
+  .phase-big.descent { color: var(--warn);    text-shadow:0 0 18px rgba(251,191,36,.35); }
+  .aoa-note { text-align:center; color:var(--muted); font-size:11px; margin-top:8px; }
+  .aoa-note b { color:var(--text); font-weight:700; }
+  @media (max-width:520px){ .phase-big { font-size:32px; } }
 
   /* radar */
   .radar-wrap { display:flex; justify-content:center; }
@@ -180,7 +192,7 @@
   </section>
 
   <section class="card" id="card-state">
-    <h2>State <span id="phasePill"></span></h2>
+    <h2>State</h2>
     <div id="stateBody"><div class="empty">—</div></div>
   </section>
 
@@ -292,7 +304,6 @@ function render(ac){
     const why = state.airborneOnly ? "airborne aircraft" : "aircraft";
     $("heroBody").innerHTML = `<div class="empty">No ${why} within ${state.radius} nm right now.${state.airborneOnly ? "<br><small>Parked/taxiing traffic is hidden — untick “Airborne only” to see it.</small>" : ""}</div>`;
     $("stateBody").innerHTML = `<div class="empty">—</div>`;
-    $("phasePill").className = ""; $("phasePill").textContent = "";
     $("listBody").innerHTML = `<div class="empty">—</div>`;
     return;
   }
@@ -406,46 +417,103 @@ function paintEnrich(rec){
   }
 }
 
-// ---- "orienting" instrument panel: heading dial + altitude tape ----
+// ---- "orienting" instrument panel: 3-D attitude plane + altitude tape ----
+// A stylised airliner viewed from above-and-behind, ~45° off the line of
+// travel. It pitches to the estimated body attitude; a green flight-path
+// marker shows the velocity vector, so the gap nose→marker is the AoA.
+const PLANE_3D = `
+  <g stroke-linejoin="round">
+    <!-- far wing (smaller / shaded for perspective) -->
+    <path d="M10,-4 L-22,-27 L-13,-30 L16,-7 Z" fill="#7c8aa6"/>
+    <!-- far tailplane -->
+    <path d="M-30,-3 L-44,-13 L-39,-14 L-28,-4 Z" fill="#6f7d99"/>
+    <!-- vertical fin -->
+    <path d="M-28,-2 L-43,-18 L-37,-17 L-24,-2 Z" fill="#dbe4f1"/>
+    <!-- fuselage -->
+    <path d="M41,0 C33,-7 -24,-8 -38,-5 C-42,-4 -42,4 -38,5 C-24,8 33,7 41,0 Z"
+          fill="#c3cee0" stroke="#2a3650" stroke-width="1"/>
+    <!-- fuselage top highlight -->
+    <path d="M34,-1 C18,-4 -22,-4 -34,-2 C-22,0 18,1 34,1 Z" fill="#e8eef7"/>
+    <!-- near tailplane -->
+    <path d="M-30,3 L-45,15 L-39,17 L-28,5 Z" fill="#9fb0cc"/>
+    <!-- near wing (larger, lighter) -->
+    <path d="M11,4 L-23,31 L-12,35 L17,7 Z" fill="#aebcd6" stroke="#2a3650" stroke-width="0.8"/>
+    <!-- engines under near wing -->
+    <ellipse cx="-2" cy="17" rx="3.2" ry="4.6" fill="#5b6b85"/>
+    <ellipse cx="-13" cy="25" rx="2.8" ry="4" fill="#5b6b85"/>
+    <!-- nose -->
+    <circle cx="39" cy="0" r="2.4" fill="#eef3fa"/>
+  </g>`;
+
 function renderState(a){
   const phase = phaseOf(a);
-  const pmap = {ground:["ph-ground","ON GROUND"], climb:["ph-climb","CLIMB"], cruise:["ph-cruise","CRUISE"], descent:["ph-descent","DESCENT"]};
-  $("phasePill").className = "phase-pill " + pmap[phase][0];
-  $("phasePill").textContent = pmap[phase][1];
+  const pmap = {
+    ground:  ["ground",  "On ground", "■"],
+    climb:   ["climb",   "Climb",     "▲"],
+    cruise:  ["cruise",  "Cruise",    "✈"],
+    descent: ["descent", "Descent",   "▼"],
+  };
+  const [phCls, phLabel, phIcon] = pmap[phase];
 
   const hdg = heading(a) ?? 0;
   const alt = a.alt_baro === "ground" ? 0 : (typeof a.alt_baro === "number" ? a.alt_baro : 0);
-  const rate = vrate(a) ?? 0;
+  const rate = vrate(a) ?? 0;            // ft/min
+  const gs = a.gs ?? 0;                  // kt
+
+  // Flight-path (climb/descent) angle from V/S and ground speed.
+  const vsFtS = rate / 60;
+  const gsFtS = gs * 1.68781;
+  let gamma = gsFtS > 1 ? Math.atan2(vsFtS, gsFtS) * 180 / Math.PI
+                        : (rate > 50 ? 12 : rate < -50 ? -12 : 0);
+  // Rough angle of attack: rises as the aircraft slows (illustrative only).
+  let aoa = (phase === "ground" || gs <= 0) ? 0
+          : Math.max(0.5, Math.min(14, 2.5 + (180 - gs) * 0.05));
+  // Body pitch attitude ≈ flight-path angle + AoA.
+  let pitch = phase === "ground" ? 0 : gamma + aoa;
+  if (phase === "ground") gamma = 0;
+
+  const PS = 1.7;                        // screen degrees-exaggeration
+  const clamp = (v, m) => Math.max(-m, Math.min(m, v));
+  const pitchScreen = clamp(pitch * PS, 36);
+  const fpY = 100 - clamp(gamma * PS, 60);  // flight-path marker height
+  const fpX = 150;
+
+  // altitude tape
   const MAXALT = 45000;
   const tapeTop = 24, tapeBot = 196, tapeH = tapeBot - tapeTop;
-  const altY = tapeBot - Math.max(0, Math.min(1, alt/MAXALT)) * tapeH;
-  const planeColor = phase==="ground" ? "#8b9bb4" : "#38bdf8";
-  const altColor = rate>300 ? "#34d399" : rate<-300 ? "#fbbf24" : "#e6edf6";
-  const rateTxt = rate>=64 ? `▲ ${rate}` : rate<=-64 ? `▼ ${Math.abs(rate)}` : "level";
+  const altY = tapeBot - Math.max(0, Math.min(1, alt / MAXALT)) * tapeH;
+  const altColor = rate > 300 ? "#34d399" : rate < -300 ? "#fbbf24" : "#e6edf6";
+  const rateTxt = rate >= 64 ? `▲ ${rate}` : rate <= -64 ? `▼ ${Math.abs(rate)}` : "level";
 
-  // top-down plane silhouette, points up (north) by default, rotated to heading
-  const planePath = "M0,-30 L5,-12 L5,-6 L26,6 L26,12 L5,7 L5,20 L12,27 L12,31 L0,27 L-12,31 L-12,27 L-5,20 L-5,7 L-26,12 L-26,6 L-5,-6 L-5,-12 Z";
+  const ladder = [-20, -10, 10, 20].map(d => {
+    const y = 100 - d * PS;
+    return `<line x1="86" y1="${y}" x2="114" y2="${y}" stroke="#46587a" stroke-width="1"/>`
+         + `<text x="118" y="${y + 3}" fill="#56627a" font-size="8">${Math.abs(d)}</text>`;
+  }).join("");
 
   $("stateBody").innerHTML = `
+  <div class="phase-big ${phCls}"><span class="ic">${phIcon}</span>${phLabel}</div>
   <div class="instrument">
-    <svg viewBox="0 0 320 210" width="100%" style="max-width:420px">
-      <!-- heading dial -->
-      <g transform="translate(105,105)">
-        <circle r="92" fill="#0a0f18" stroke="#243044" stroke-width="2"/>
-        <circle r="92" fill="none" stroke="#1b2433" stroke-width="14" opacity=".5"/>
-        ${[0,45,90,135,180,225,270,315].map(d=>{
-          const rad=(d-90)*Math.PI/180, x1=Math.cos(rad)*92, y1=Math.sin(rad)*92, x2=Math.cos(rad)*82, y2=Math.sin(rad)*82;
-          return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="#33415a" stroke-width="2"/>`;
-        }).join("")}
-        <text x="0" y="-70" fill="#8b9bb4" font-size="13" text-anchor="middle" font-weight="700">N</text>
-        <text x="74" y="5" fill="#56627a" font-size="12" text-anchor="middle">E</text>
-        <text x="0" y="82" fill="#56627a" font-size="12" text-anchor="middle">S</text>
-        <text x="-74" y="5" fill="#56627a" font-size="12" text-anchor="middle">W</text>
-        <g transform="rotate(${hdg})" style="transition:transform .6s ease">
-          <path d="${planePath}" fill="${planeColor}" stroke="#04121c" stroke-width="1.5" stroke-linejoin="round"/>
+    <svg viewBox="0 0 320 210" width="100%" style="max-width:440px">
+      <defs><clipPath id="att"><circle cx="100" cy="100" r="84"/></clipPath></defs>
+      <g clip-path="url(#att)">
+        <rect x="16" y="14" width="168" height="86" fill="#13233f"/>
+        <rect x="16" y="100" width="168" height="86" fill="#191510"/>
+        <line x1="16" y1="100" x2="184" y2="100" stroke="#46587a" stroke-width="2"/>
+        ${ladder}
+        <!-- flight-path-vector marker (velocity direction) -->
+        <g transform="translate(${fpX},${fpY.toFixed(1)})">
+          <circle r="5" fill="none" stroke="#34d399" stroke-width="2"/>
+          <line x1="-10" y1="0" x2="-5" y2="0" stroke="#34d399" stroke-width="2"/>
+          <line x1="5" y1="0" x2="10" y2="0" stroke="#34d399" stroke-width="2"/>
+          <line x1="0" y1="-5" x2="0" y2="-9" stroke="#34d399" stroke-width="2"/>
         </g>
+        <!-- the 3-D plane, pitched to body attitude -->
+        <g transform="translate(100,100) rotate(${(-pitchScreen).toFixed(1)}) scale(0.95)"
+           style="transition:transform .6s ease">${PLANE_3D}</g>
       </g>
-      <text x="105" y="200" fill="#8b9bb4" font-size="12" text-anchor="middle">HDG ${Math.round(hdg)}°</text>
+      <circle cx="100" cy="100" r="84" fill="none" stroke="#243044" stroke-width="2"/>
+      <text x="100" y="200" fill="#8b9bb4" font-size="11" text-anchor="middle">attitude · ◯ = flight path</text>
 
       <!-- altitude tape -->
       <g transform="translate(250,0)">
@@ -460,7 +528,8 @@ function renderState(a){
         <text x="21" y="208" fill="#8b9bb4" font-size="10" text-anchor="middle">${rateTxt} fpm</text>
       </g>
     </svg>
-  </div>`;
+  </div>
+  <div class="aoa-note">AoA ≈ <b>${aoa.toFixed(0)}°</b> · flight path <b>${gamma>0?"+":""}${gamma.toFixed(0)}°</b> · nose <b>${pitch>0?"+":""}${pitch.toFixed(0)}°</b> · HDG <b>${Math.round(hdg)}° ${bearingName(hdg)}</b></div>`;
 }
 
 // ---- METAR weather, decoded into plain English ----
