@@ -236,7 +236,7 @@ const HOME = { lat: 32.7262, lon: -117.1262 };
 let state = {
   lat: null, lon: null, radius: 50, intervalSec: 10,
   airborneOnly: true, minGs: 0,
-  metarStation: "KSAN",
+  metarStation: "KSAN", locSource: null,
   timer: null, metarTimer: null, predictTimer: null, lastClosestHex: null,
   base: null,          // { t, list:[...] } snapshot from the last real fetch
   closestHex: null,    // hex of the aircraft shown in the hero
@@ -248,8 +248,13 @@ let state = {
 // ---- persistence ----
 try {
   const saved = JSON.parse(localStorage.getItem("flightdash") || "{}");
-  if (saved.lat != null) { state.lat = saved.lat; $("lat").value = saved.lat; }
-  if (saved.lon != null) { state.lon = saved.lon; $("lon").value = saved.lon; }
+  // Only restore a location set deliberately (Home/Apply) or via a *good* GPS fix.
+  // Older builds persisted coarse IP-based geolocation with no source tag — ignore
+  // those so we fall back to HOME instead of a wrong city (e.g. the AZ ISP egress).
+  if (saved.lat != null && ["home","manual","geo"].includes(saved.locSource)) {
+    state.lat = saved.lat; state.lon = saved.lon; state.locSource = saved.locSource;
+    $("lat").value = saved.lat; $("lon").value = saved.lon;
+  }
   if (saved.radius) { state.radius = saved.radius; $("radius").value = saved.radius; }
   if (saved.intervalSec) { state.intervalSec = saved.intervalSec; $("interval").value = saved.intervalSec; }
   if (saved.airborneOnly != null) { state.airborneOnly = saved.airborneOnly; $("airborneOnly").checked = saved.airborneOnly; }
@@ -258,7 +263,8 @@ try {
 } catch (e) {}
 function persist() {
   localStorage.setItem("flightdash", JSON.stringify({
-    lat: state.lat, lon: state.lon, radius: state.radius, intervalSec: state.intervalSec,
+    lat: state.lat, lon: state.lon, locSource: state.locSource,
+    radius: state.radius, intervalSec: state.intervalSec,
     airborneOnly: state.airborneOnly, minGs: state.minGs, metarStation: state.metarStation
   }));
 }
@@ -825,19 +831,27 @@ $("useLoc").onclick = () => {
   setStatus("locating…");
   navigator.geolocation.getCurrentPosition(
     pos => {
+      const acc = pos.coords.accuracy;   // metres, 95% radius
+      // A huge radius means an IP/Wi-Fi guess (often a different city) — refuse it
+      // rather than silently jumping the dashboard there.
+      if (acc != null && acc > 5000){
+        setStatus(`ignored a low-accuracy fix (±${(acc/1000).toFixed(0)} km, looks IP-based) — tap 🏠 Home or type coords`, "err");
+        return;
+      }
       state.lat = +pos.coords.latitude.toFixed(4);
       state.lon = +pos.coords.longitude.toFixed(4);
+      state.locSource = "geo";
       $("lat").value = state.lat; $("lon").value = state.lon;
-      $("locText").innerHTML = `<span class="dot live"></span>your location: <b>${state.lat}, ${state.lon}</b>`;
+      $("locText").innerHTML = `<span class="dot live"></span>your location: <b>${state.lat}, ${state.lon}</b> (±${Math.round(acc)} m)`;
       if (state.map) state.map.setView([state.lat, state.lon], zoomForRadius(state.radius));
       persist(); restart();
     },
     err => setStatus("location denied — enter coords manually", "err"),
-    { enableHighAccuracy: false, timeout: 10000 }
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
   );
 };
 $("useHome").onclick = () => {
-  state.lat = HOME.lat; state.lon = HOME.lon;
+  state.lat = HOME.lat; state.lon = HOME.lon; state.locSource = "home";
   $("lat").value = HOME.lat; $("lon").value = HOME.lon;
   $("locText").innerHTML = `<span class="dot live"></span>watching: <b>${state.lat}, ${state.lon}</b> (home)`;
   if (state.map) state.map.setView([state.lat, state.lon], zoomForRadius(state.radius));
@@ -852,7 +866,7 @@ $("wxStation").onchange = () => {
 };
 $("apply").onclick = () => {
   const la = parseFloat($("lat").value), lo = parseFloat($("lon").value);
-  if (Number.isFinite(la) && Number.isFinite(lo)){ state.lat = la; state.lon = lo; }
+  if (Number.isFinite(la) && Number.isFinite(lo)){ state.lat = la; state.lon = lo; state.locSource = "manual"; }
   state.radius = Math.max(1, Math.min(250, parseInt($("radius").value)||50));
   state.intervalSec = Math.max(3, Math.min(120, parseInt($("interval").value)||10));
   state.airborneOnly = $("airborneOnly").checked;
@@ -870,7 +884,7 @@ state.predictTimer = setInterval(predict, 500);        // dead-reckon between fe
 // Default to HOME when this client has no saved location — so every device
 // (including phones over http, where geolocation is blocked) loads data at once.
 let atHome = false;
-if (state.lat == null || state.lon == null){ state.lat = HOME.lat; state.lon = HOME.lon; atHome = true; }
+if (state.lat == null || state.lon == null){ state.lat = HOME.lat; state.lon = HOME.lon; state.locSource = "home"; atHome = true; }
 $("lat").value = state.lat; $("lon").value = state.lon;
 $("locText").innerHTML = `<span class="dot live"></span>watching: <b>${state.lat}, ${state.lon}</b>${atHome ? " (home)" : ""}`;
 restart();
