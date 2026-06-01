@@ -111,7 +111,17 @@
   .ph-climb  { background:rgba(52,211,153,.15); color:var(--accent2); }
   .ph-cruise { background:rgba(56,189,248,.15); color:var(--accent); }
   .ph-descent{ background:rgba(251,191,36,.15); color:var(--warn); }
-  .instrument { display:flex; justify-content:center; align-items:center; }
+  .instrument { display:flex; justify-content:center; align-items:center; gap:18px; }
+  /* 3-D plane stage: real CSS perspective, viewed from above & behind */
+  .stage { width:200px; height:180px; position:relative; perspective:640px; perspective-origin:50% 34%; flex:0 0 auto; }
+  .stage .floor { position:absolute; left:50%; top:63%; width:150px; height:40px;
+    transform:translate(-50%,-50%); border-radius:50%; filter:blur(2px);
+    background:radial-gradient(ellipse at center, rgba(0,0,0,.55), rgba(0,0,0,0) 70%); }
+  .plane3d { position:absolute; left:50%; top:50%; width:150px; height:150px; margin:-75px 0 0 -75px;
+    transform-style:preserve-3d; transition:transform .6s ease;
+    filter:drop-shadow(0 8px 7px rgba(0,0,0,.4)); }
+  .plane3d svg { display:block; }
+  .tape { flex:0 0 auto; }
   /* big, prominent flight-phase banner */
   .phase-big { display:flex; align-items:center; justify-content:center; gap:12px;
     font-size:40px; font-weight:800; letter-spacing:1.5px; line-height:1;
@@ -417,33 +427,21 @@ function paintEnrich(rec){
   }
 }
 
-// ---- "orienting" instrument panel: 3-D attitude plane + altitude tape ----
-// A stylised airliner viewed from above-and-behind, ~45° off the line of
-// travel. It pitches to the estimated body attitude; a green flight-path
-// marker shows the velocity vector, so the gap nose→marker is the AoA.
-const PLANE_3D = `
-  <g stroke-linejoin="round">
-    <!-- far wing (smaller / shaded for perspective) -->
-    <path d="M10,-4 L-22,-27 L-13,-30 L16,-7 Z" fill="#7c8aa6"/>
-    <!-- far tailplane -->
-    <path d="M-30,-3 L-44,-13 L-39,-14 L-28,-4 Z" fill="#6f7d99"/>
-    <!-- vertical fin -->
-    <path d="M-28,-2 L-43,-18 L-37,-17 L-24,-2 Z" fill="#dbe4f1"/>
-    <!-- fuselage -->
-    <path d="M41,0 C33,-7 -24,-8 -38,-5 C-42,-4 -42,4 -38,5 C-24,8 33,7 41,0 Z"
-          fill="#c3cee0" stroke="#2a3650" stroke-width="1"/>
-    <!-- fuselage top highlight -->
-    <path d="M34,-1 C18,-4 -22,-4 -34,-2 C-22,0 18,1 34,1 Z" fill="#e8eef7"/>
-    <!-- near tailplane -->
-    <path d="M-30,3 L-45,15 L-39,17 L-28,5 Z" fill="#9fb0cc"/>
-    <!-- near wing (larger, lighter) -->
-    <path d="M11,4 L-23,31 L-12,35 L17,7 Z" fill="#aebcd6" stroke="#2a3650" stroke-width="0.8"/>
-    <!-- engines under near wing -->
-    <ellipse cx="-2" cy="17" rx="3.2" ry="4.6" fill="#5b6b85"/>
-    <ellipse cx="-13" cy="25" rx="2.8" ry="4" fill="#5b6b85"/>
-    <!-- nose -->
-    <circle cx="39" cy="0" r="2.4" fill="#eef3fa"/>
-  </g>`;
+// ---- "orienting" instrument: 3-D plane (CSS perspective) + altitude tape ----
+// The camera sits above and behind the aircraft, AZIMUTH degrees off the line
+// of travel, so you look down on the top of the plane in a 3/4 view. The plane
+// then pitches (about its lateral axis, in 3-D) to the estimated body attitude.
+const CAM_TILT = 56;   // camera elevation: 0 = flat-on, 90 = straight-down
+const AZIMUTH  = 40;   // camera offset from the line of travel → 3/4 view
+// Top-down airliner silhouette (nose up); CSS 3-D turns it into the chase view.
+const PLANE_TOP = `<svg viewBox="-40 -50 80 100" width="150" height="150">
+  <defs><linearGradient id="pg" x1="0" y1="0" x2="0.3" y2="1">
+    <stop offset="0" stop-color="#eef3fb"/><stop offset="0.55" stop-color="#bccae0"/><stop offset="1" stop-color="#8595b3"/>
+  </linearGradient></defs>
+  <path d="M0,-46 C3,-43 4,-28 4,-13 L35,3 L35,10 L4,1 L4,23 L11,31 L11,35 L0,31 L-11,35 L-11,31 L-4,23 L-4,1 L-35,10 L-35,3 L-4,-13 C-4,-28 -3,-43 0,-46 Z"
+        fill="url(#pg)" stroke="#27324a" stroke-width="1.2" stroke-linejoin="round"/>
+  <path d="M0,-43 C1.8,-40 2.2,-18 2.2,3 L2.2,24 L0,28 L-2.2,24 L-2.2,3 C-2.2,-18 -1.8,-40 0,-43 Z" fill="#ffffff" opacity="0.16"/>
+</svg>`;
 
 function renderState(a){
   const phase = phaseOf(a);
@@ -472,11 +470,11 @@ function renderState(a){
   let pitch = phase === "ground" ? 0 : gamma + aoa;
   if (phase === "ground") gamma = 0;
 
-  const PS = 1.7;                        // screen degrees-exaggeration
-  const clamp = (v, m) => Math.max(-m, Math.min(m, v));
-  const pitchScreen = clamp(pitch * PS, 36);
-  const fpY = 100 - clamp(gamma * PS, 60);  // flight-path marker height
-  const fpX = 150;
+  // Pitch the plane in 3-D about its lateral axis (innermost rotateX); negative
+  // tips the nose toward the camera → "nose up" for a climb. Exaggerated x1.4.
+  const pitchTilt = Math.max(-30, Math.min(30, pitch * 1.4));
+  const planeTransform =
+    `rotateX(${CAM_TILT}deg) rotateZ(${AZIMUTH}deg) rotateX(${(-pitchTilt).toFixed(1)}deg)`;
 
   // altitude tape
   const MAXALT = 45000;
@@ -485,48 +483,23 @@ function renderState(a){
   const altColor = rate > 300 ? "#34d399" : rate < -300 ? "#fbbf24" : "#e6edf6";
   const rateTxt = rate >= 64 ? `▲ ${rate}` : rate <= -64 ? `▼ ${Math.abs(rate)}` : "level";
 
-  const ladder = [-20, -10, 10, 20].map(d => {
-    const y = 100 - d * PS;
-    return `<line x1="86" y1="${y}" x2="114" y2="${y}" stroke="#46587a" stroke-width="1"/>`
-         + `<text x="118" y="${y + 3}" fill="#56627a" font-size="8">${Math.abs(d)}</text>`;
-  }).join("");
-
   $("stateBody").innerHTML = `
   <div class="phase-big ${phCls}"><span class="ic">${phIcon}</span>${phLabel}</div>
   <div class="instrument">
-    <svg viewBox="0 0 320 210" width="100%" style="max-width:440px">
-      <defs><clipPath id="att"><circle cx="100" cy="100" r="84"/></clipPath></defs>
-      <g clip-path="url(#att)">
-        <rect x="16" y="14" width="168" height="86" fill="#13233f"/>
-        <rect x="16" y="100" width="168" height="86" fill="#191510"/>
-        <line x1="16" y1="100" x2="184" y2="100" stroke="#46587a" stroke-width="2"/>
-        ${ladder}
-        <!-- flight-path-vector marker (velocity direction) -->
-        <g transform="translate(${fpX},${fpY.toFixed(1)})">
-          <circle r="5" fill="none" stroke="#34d399" stroke-width="2"/>
-          <line x1="-10" y1="0" x2="-5" y2="0" stroke="#34d399" stroke-width="2"/>
-          <line x1="5" y1="0" x2="10" y2="0" stroke="#34d399" stroke-width="2"/>
-          <line x1="0" y1="-5" x2="0" y2="-9" stroke="#34d399" stroke-width="2"/>
-        </g>
-        <!-- the 3-D plane, pitched to body attitude -->
-        <g transform="translate(100,100) rotate(${(-pitchScreen).toFixed(1)}) scale(0.95)"
-           style="transition:transform .6s ease">${PLANE_3D}</g>
-      </g>
-      <circle cx="100" cy="100" r="84" fill="none" stroke="#243044" stroke-width="2"/>
-      <text x="100" y="200" fill="#8b9bb4" font-size="11" text-anchor="middle">attitude · ◯ = flight path</text>
-
-      <!-- altitude tape -->
-      <g transform="translate(250,0)">
-        <rect x="14" y="${tapeTop}" width="14" height="${tapeH}" rx="7" fill="#0a0f18" stroke="#243044"/>
-        <rect x="14" y="${altY.toFixed(1)}" width="14" height="${(tapeBot-altY).toFixed(1)}" rx="7" fill="${altColor}" opacity=".35"/>
-        <line x1="6" y1="${altY.toFixed(1)}" x2="36" y2="${altY.toFixed(1)}" stroke="${altColor}" stroke-width="2"/>
-        ${[0,10000,20000,30000,40000].map(t=>{
-          const y=tapeBot - (t/MAXALT)*tapeH;
-          return `<text x="44" y="${(y+4).toFixed(1)}" fill="#56627a" font-size="9">${t/1000|0}k</text>`;
-        }).join("")}
-        <text x="21" y="14" fill="${altColor}" font-size="13" text-anchor="middle" font-weight="700">${alt? (alt/1000).toFixed(1)+"k":"GND"}</text>
-        <text x="21" y="208" fill="#8b9bb4" font-size="10" text-anchor="middle">${rateTxt} fpm</text>
-      </g>
+    <div class="stage">
+      <div class="floor"></div>
+      <div class="plane3d" style="transform:${planeTransform}">${PLANE_TOP}</div>
+    </div>
+    <svg class="tape" viewBox="0 0 64 210" width="64">
+      <rect x="14" y="${tapeTop}" width="14" height="${tapeH}" rx="7" fill="#0a0f18" stroke="#243044"/>
+      <rect x="14" y="${altY.toFixed(1)}" width="14" height="${(tapeBot-altY).toFixed(1)}" rx="7" fill="${altColor}" opacity=".35"/>
+      <line x1="6" y1="${altY.toFixed(1)}" x2="36" y2="${altY.toFixed(1)}" stroke="${altColor}" stroke-width="2"/>
+      ${[0,10000,20000,30000,40000].map(t=>{
+        const y=tapeBot - (t/MAXALT)*tapeH;
+        return `<text x="40" y="${(y+4).toFixed(1)}" fill="#56627a" font-size="9">${t/1000|0}k</text>`;
+      }).join("")}
+      <text x="21" y="14" fill="${altColor}" font-size="13" text-anchor="middle" font-weight="700">${alt? (alt/1000).toFixed(1)+"k":"GND"}</text>
+      <text x="21" y="208" fill="#8b9bb4" font-size="10" text-anchor="middle">${rateTxt}</text>
     </svg>
   </div>
   <div class="aoa-note">AoA ≈ <b>${aoa.toFixed(0)}°</b> · flight path <b>${gamma>0?"+":""}${gamma.toFixed(0)}°</b> · nose <b>${pitch>0?"+":""}${pitch.toFixed(0)}°</b> · HDG <b>${Math.round(hdg)}° ${bearingName(hdg)}</b></div>`;
