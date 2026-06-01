@@ -102,6 +102,8 @@
   .stat .v { font-size: 22px; font-weight: 700; margin-top: 4px; }
   .stat .v small { font-size: 12px; color: var(--muted); font-weight:500; }
   .up { color: var(--accent2); } .down { color: var(--warn); }
+  .tr { font-size: 10px; margin-left: 5px; vertical-align: middle; }
+  .tr.up { color: var(--accent2); } .tr.dn { color: var(--warn); } .tr.fl { color: var(--muted); }
   .hero a.track { display:inline-block; margin-top:16px; color:var(--accent); font-size:13px; text-decoration:none; }
   .hero a.track:hover { text-decoration: underline; }
 
@@ -235,7 +237,11 @@ let state = {
   lat: null, lon: null, radius: 50, intervalSec: 10,
   airborneOnly: true, minGs: 0,
   metarStation: "KSAN",
-  timer: null, metarTimer: null, lastClosestHex: null,
+  timer: null, metarTimer: null, predictTimer: null, lastClosestHex: null,
+  base: null,          // { t, list:[...] } snapshot from the last real fetch
+  closestHex: null,    // hex of the aircraft shown in the hero
+  prevClosest: null,   // previous fetch's closest values, for trend arrows
+  trends: { alt:0, gs:0, dst:0 },
   map: null, youMarker: null, acLayer: null,
 };
 
@@ -285,6 +291,45 @@ function phaseOf(a){
   if (r != null && r < -300) return "descent";
   return "cruise";
 }
+function numAlt(a){ return a.alt_baro === "ground" ? 0 : (typeof a.alt_baro === "number" ? a.alt_baro : 0); }
+
+// --- geo: distance (nm) & initial bearing between two lat/lon points ---
+const R_NM = 3440.065;
+function toRad(d){ return d*Math.PI/180; }
+function geoDistNm(la1, lo1, la2, lo2){
+  const dLa = toRad(la2-la1), dLo = toRad(lo2-lo1);
+  const s = Math.sin(dLa/2)**2 + Math.cos(toRad(la1))*Math.cos(toRad(la2))*Math.sin(dLo/2)**2;
+  return 2*R_NM*Math.asin(Math.min(1, Math.sqrt(s)));
+}
+function geoBearing(la1, lo1, la2, lo2){
+  const y = Math.sin(toRad(lo2-lo1))*Math.cos(toRad(la2));
+  const x = Math.cos(toRad(la1))*Math.sin(toRad(la2)) - Math.sin(toRad(la1))*Math.cos(toRad(la2))*Math.cos(toRad(lo2-lo1));
+  return (Math.atan2(y,x)*180/Math.PI + 360) % 360;
+}
+
+// --- dead-reckon an aircraft forward by dt seconds (constant gs/track/vrate) ---
+function extrapolate(a, dt){
+  if (a.alt_baro === "ground" || a.gs == null || a.gs < 30 || a.lat == null) return a;
+  const dNm = a.gs * dt / 3600;
+  const tr = toRad(heading(a) ?? 0);
+  const lat = a.lat + dNm*Math.cos(tr)/60;
+  const lon = a.lon + dNm*Math.sin(tr)/(60*Math.cos(toRad(a.lat)) || 1e-6);
+  let alt_baro = a.alt_baro;
+  if (typeof a.alt_baro === "number"){
+    const r = vrate(a) || 0;
+    alt_baro = Math.max(0, a.alt_baro + r*dt/60);
+  }
+  const dst = (state.lat!=null) ? geoDistNm(state.lat, state.lon, lat, lon) : a.dst;
+  const dir = (state.lat!=null) ? geoBearing(state.lat, state.lon, lat, lon) : a.dir;
+  return { ...a, lat, lon, alt_baro, dst, dir };
+}
+
+// --- small ▲/▼ trend arrow for a value's recent direction ---
+function trendArrow(delta, dead){
+  if (delta >  dead) return `<span class="tr up" title="rising">▲</span>`;
+  if (delta < -dead) return `<span class="tr dn" title="falling">▼</span>`;
+  return `<span class="tr fl" title="steady">▬</span>`;
+}
 
 // ---- main fetch ----
 async function tick(){
@@ -310,15 +355,35 @@ function render(ac){
   radar.setData(ac, ac[0]);
   $("radarRange").textContent = (state.radius||50) + " nm";
   renderMap(ac, ac[0]);
+  // Snapshot the fetch for the 0.5s interpolation loop.
+  state.base = { t: Date.now(), list: ac.map(x => ({
+    hex:x.hex, lat:x.lat, lon:x.lon, alt_baro:x.alt_baro, gs:x.gs,
+    track:x.track, true_heading:x.true_heading, mag_heading:x.mag_heading,
+    baro_rate:x.baro_rate, geom_rate:x.geom_rate, flight:x.flight, t:x.t,
+    dst:x.dst, dir:x.dir,
+  })) };
   if (!ac.length){
+    state.closestHex = null; state.prevClosest = null;
     const why = state.airborneOnly ? "airborne aircraft" : "aircraft";
     $("heroBody").innerHTML = `<div class="empty">No ${why} within ${state.radius} nm right now.${state.airborneOnly ? "<br><small>Parked/taxiing traffic is hidden — untick “Airborne only” to see it.</small>" : ""}</div>`;
     $("stateBody").innerHTML = `<div class="empty">—</div>`;
     $("listBody").innerHTML = `<div class="empty">—</div>`;
     return;
   }
-  renderHero(ac[0]);
-  renderState(ac[0]);
+  const top = ac[0];
+  // Trend over the previous fetch (~10s ago) → recent direction of movement.
+  let tr = { alt:0, gs:0, dst:0 };
+  const p = state.prevClosest;
+  if (p && p.hex === top.hex){
+    const age = (Date.now()-p.t)/1000;
+    if (age >= 4 && age <= 40)
+      tr = { alt: numAlt(top)-p.alt, gs: (top.gs||0)-p.gs, dst: (top.dst||0)-p.dst };
+  }
+  state.trends = tr;
+  state.prevClosest = { hex: top.hex, alt: numAlt(top), gs: top.gs||0, dst: top.dst||0, t: Date.now() };
+  state.closestHex = top.hex;
+  renderHero(top);
+  renderState(top);
   renderList(ac);
 }
 
@@ -345,14 +410,14 @@ function renderHero(a){
       <div class="compass" title="Direction from you to the aircraft">
         <div class="lbl">look toward</div>
         <div class="n">N</div>
-        <div class="arrow" style="transform: translate(-50%,-100%) rotate(${dir!=null?dir:0}deg)"></div>
-        <div class="deg">${dir!=null ? dir+"° "+bearingName(dir) : "—"}</div>
+        <div class="arrow" id="cArrow" style="transform: translate(-50%,-100%) rotate(${dir!=null?dir:0}deg)"></div>
+        <div class="deg" id="cDeg">${dir!=null ? dir+"° "+bearingName(dir) : "—"}</div>
       </div>
     </div>
     <div class="grid">
-      <div class="stat"><div class="k">Distance</div><div class="v">${a.dst!=null?a.dst.toFixed(1):"—"} <small>nm / ${distMi} mi</small></div></div>
-      <div class="stat"><div class="k">Altitude</div><div class="v">${alt.v} <small>${alt.s} ${trend}</small></div></div>
-      <div class="stat"><div class="k">Ground speed</div><div class="v">${a.gs!=null?Math.round(a.gs):"—"} <small>kt</small></div></div>
+      <div class="stat"><div class="k">Distance ${trendArrow(state.trends.dst, 0.15)}</div><div class="v"><span id="vDist">${a.dst!=null?a.dst.toFixed(1):"—"}</span> <small>nm / <span id="vDistMi">${distMi}</span> mi</small></div></div>
+      <div class="stat"><div class="k">Altitude ${trendArrow(state.trends.alt, 40)}</div><div class="v"><span id="vAlt">${alt.v}</span> <small>${alt.s} ${trend}</small></div></div>
+      <div class="stat"><div class="k">Ground speed ${trendArrow(state.trends.gs, 3)}</div><div class="v"><span id="vGs">${a.gs!=null?Math.round(a.gs):"—"}</span> <small>kt</small></div></div>
       <div class="stat"><div class="k">Heading</div><div class="v">${hdg!=null?Math.round(hdg):"—"}<small>°</small></div></div>
       <div class="stat"><div class="k">Squawk</div><div class="v">${a.squawk || "—"}</div></div>
       <div class="stat"><div class="k">Signal</div><div class="v">${a.rssi!=null?a.rssi:"—"}<small> dBFS</small></div></div>
@@ -363,8 +428,13 @@ function renderHero(a){
   enrichClosest(a, cs);
 }
 
-// ---- human-readable enrichment: airline, route, owner, photo (adsbdb) ----
-const enrichCache = {};   // hex -> {airline, route, ac}
+// ---- human-readable enrichment ----
+// Aircraft facts (owner/type/photo) belong to the AIRFRAME → cache by hex.
+// Route (origin/destination/airline) belongs to the FLIGHT → cache by CALLSIGN.
+// (Caching the route by hex was the bug: a jet keeps its hex across flights, so
+//  an earlier leg's route stuck when its callsign changed.)
+const acCache = {};      // hex -> aircraft record | null
+const routeCache = {};   // callsign -> { airline, route } | null
 function airportLabel(ap){
   if (!ap) return null;
   const code = ap.iata_code || ap.icao_code || "";
@@ -373,29 +443,32 @@ function airportLabel(ap){
 }
 async function enrichClosest(a, cs){
   const hex = a.hex;
-  if (enrichCache[hex]) return paintEnrich(enrichCache[hex]);
-  const rec = { airline:null, route:null, ac:null };
-  enrichCache[hex] = rec;  // reserve so we don't double-fetch
-  // Aircraft (owner / manufacturer / type / photo) — keyed by hex.
-  try {
-    const r = await fetch(`/api/aircraft?hex=${encodeURIComponent(hex)}`);
-    const d = await r.json();
-    if (d.response && d.response.aircraft) rec.ac = d.response.aircraft;
-  } catch (e) {}
-  // Airline + route — keyed by callsign.
-  if (cs && cs !== hex){
+  if (acCache[hex] === undefined){
+    acCache[hex] = null;
     try {
-      const r = await fetch(`/api/callsign?cs=${encodeURIComponent(cs.trim())}`);
+      const r = await fetch(`/api/aircraft?hex=${encodeURIComponent(hex)}`);
+      const d = await r.json();
+      if (d.response && d.response.aircraft) acCache[hex] = d.response.aircraft;
+    } catch (e) {}
+  }
+  const key = (cs && cs !== hex) ? cs.trim().toUpperCase() : null;
+  if (key && routeCache[key] === undefined){
+    routeCache[key] = null;
+    try {
+      const r = await fetch(`/api/callsign?cs=${encodeURIComponent(key)}`);
       const d = await r.json();
       if (d.response && d.response.flightroute){
         const fr = d.response.flightroute;
-        rec.airline = fr.airline ? fr.airline.name : null;
-        rec.route = { from: airportLabel(fr.origin), to: airportLabel(fr.destination) };
+        routeCache[key] = {
+          airline: fr.airline ? fr.airline.name : null,
+          route: { from: airportLabel(fr.origin), to: airportLabel(fr.destination) },
+        };
       }
     } catch (e) {}
   }
-  // Only paint if this is still the displayed aircraft.
-  if (state.lastClosestHex === hex) paintEnrich(rec);
+  if (state.lastClosestHex !== hex) return;   // closest changed mid-fetch
+  const rt = key ? routeCache[key] : null;
+  paintEnrich({ ac: acCache[hex], airline: rt && rt.airline, route: rt && rt.route });
 }
 function paintEnrich(rec){
   const al = $("airline"), ro = $("route"), en = $("enrich");
@@ -443,6 +516,23 @@ const PLANE_TOP = `<svg viewBox="-40 -50 80 100" width="150" height="150">
   <path d="M0,-43 C1.8,-40 2.2,-18 2.2,3 L2.2,24 L0,28 L-2.2,24 L-2.2,3 C-2.2,-18 -1.8,-40 0,-43 Z" fill="#ffffff" opacity="0.16"/>
 </svg>`;
 
+// Altitude tape — reused by renderState and the interpolation loop.
+function tapeSVG(alt, rate, isGround){
+  const MAXALT=45000, tapeTop=24, tapeBot=196, tapeH=tapeBot-tapeTop;
+  const altY = tapeBot - Math.max(0,Math.min(1, alt/MAXALT))*tapeH;
+  const altColor = rate>300?"#34d399":rate<-300?"#fbbf24":"#e6edf6";
+  const rateTxt = rate>=64?`▲ ${Math.round(rate)}`:rate<=-64?`▼ ${Math.abs(Math.round(rate))}`:"level";
+  return `<svg class="tape" viewBox="0 0 112 210" width="98">
+    <rect x="30" y="${tapeTop}" width="14" height="${tapeH}" rx="7" fill="#0a0f18" stroke="#243044"/>
+    <rect x="30" y="${altY.toFixed(1)}" width="14" height="${(tapeBot-altY).toFixed(1)}" rx="7" fill="${altColor}" opacity=".35"/>
+    ${[0,10000,20000,30000,40000].map(t=>{const y=tapeBot-(t/MAXALT)*tapeH;return `<text x="26" y="${(y+3).toFixed(1)}" fill="#56627a" font-size="9" text-anchor="end">${t/1000|0}k</text>`;}).join("")}
+    <line x1="24" y1="${altY.toFixed(1)}" x2="50" y2="${altY.toFixed(1)}" stroke="${altColor}" stroke-width="2"/>
+    <rect x="50" y="${(altY-9).toFixed(1)}" width="60" height="18" rx="4" fill="#0a0f18" stroke="${altColor}" stroke-width="1.5"/>
+    <text x="80" y="${(altY+4).toFixed(1)}" fill="${altColor}" font-size="11" text-anchor="middle" font-weight="700">${isGround ? "GROUND" : Math.round(alt).toLocaleString()+" ft"}</text>
+    <text x="37" y="208" fill="#8b9bb4" font-size="10" text-anchor="middle">${rateTxt} fpm</text>
+  </svg>`;
+}
+
 function renderState(a){
   const phase = phaseOf(a);
   const pmap = {
@@ -476,13 +566,6 @@ function renderState(a){
   const planeTransform =
     `rotateX(${CAM_TILT}deg) rotateZ(${AZIMUTH}deg) rotateX(${(-pitchTilt).toFixed(1)}deg)`;
 
-  // altitude tape
-  const MAXALT = 45000;
-  const tapeTop = 24, tapeBot = 196, tapeH = tapeBot - tapeTop;
-  const altY = tapeBot - Math.max(0, Math.min(1, alt / MAXALT)) * tapeH;
-  const altColor = rate > 300 ? "#34d399" : rate < -300 ? "#fbbf24" : "#e6edf6";
-  const rateTxt = rate >= 64 ? `▲ ${rate}` : rate <= -64 ? `▼ ${Math.abs(rate)}` : "level";
-
   $("stateBody").innerHTML = `
   <div class="phase-big ${phCls}"><span class="ic">${phIcon}</span>${phLabel}</div>
   <div class="instrument">
@@ -490,20 +573,36 @@ function renderState(a){
       <div class="floor"></div>
       <div class="plane3d" style="transform:${planeTransform}">${PLANE_TOP}</div>
     </div>
-    <svg class="tape" viewBox="0 0 112 210" width="98">
-      <rect x="30" y="${tapeTop}" width="14" height="${tapeH}" rx="7" fill="#0a0f18" stroke="#243044"/>
-      <rect x="30" y="${altY.toFixed(1)}" width="14" height="${(tapeBot-altY).toFixed(1)}" rx="7" fill="${altColor}" opacity=".35"/>
-      ${[0,10000,20000,30000,40000].map(t=>{
-        const y=tapeBot - (t/MAXALT)*tapeH;
-        return `<text x="26" y="${(y+3).toFixed(1)}" fill="#56627a" font-size="9" text-anchor="end">${t/1000|0}k</text>`;
-      }).join("")}
-      <line x1="24" y1="${altY.toFixed(1)}" x2="50" y2="${altY.toFixed(1)}" stroke="${altColor}" stroke-width="2"/>
-      <rect x="50" y="${(altY-9).toFixed(1)}" width="60" height="18" rx="4" fill="#0a0f18" stroke="${altColor}" stroke-width="1.5"/>
-      <text x="80" y="${(altY+4).toFixed(1)}" fill="${altColor}" font-size="11" text-anchor="middle" font-weight="700">${phase==='ground' ? "GROUND" : alt.toLocaleString()+" ft"}</text>
-      <text x="37" y="208" fill="#8b9bb4" font-size="10" text-anchor="middle">${rateTxt} fpm</text>
-    </svg>
+    <span id="tapeWrap">${tapeSVG(alt, rate, phase==='ground')}</span>
   </div>
   <div class="aoa-note">AoA ≈ <b>${aoa.toFixed(0)}°</b> · flight path <b>${gamma>0?"+":""}${gamma.toFixed(0)}°</b> · nose <b>${pitch>0?"+":""}${pitch.toFixed(0)}°</b> · HDG <b>${Math.round(hdg)}° ${bearingName(hdg)}</b></div>`;
+}
+
+// ---- 0.5s interpolation: dead-reckon between fetches so the UI stays live ----
+function predict(){
+  if (!state.base || state.closestHex == null) return;
+  const dt = Math.min((Date.now() - state.base.t) / 1000, 30);  // cap extrapolation
+  const list = state.base.list;
+  const baseTop = list.find(x => x.hex === state.closestHex);
+  if (!baseTop) return;
+  const c = extrapolate(baseTop, dt);
+  const isGround = c.alt_baro === "ground";
+  const altN = isGround ? 0 : (typeof c.alt_baro === "number" ? c.alt_baro : 0);
+
+  const set = (id, v) => { const el = $(id); if (el != null && v != null) el.textContent = v; };
+  if (c.dst != null){ set("vDist", c.dst.toFixed(1)); set("vDistMi", (c.dst*NM_TO_MI).toFixed(1)); }
+  set("vAlt", isGround ? "GROUND" : Math.round(altN).toLocaleString());
+  if (c.dir != null){
+    const arrow = $("cArrow"), deg = $("cDeg"), d = Math.round(c.dir);
+    if (arrow) arrow.style.transform = `translate(-50%,-100%) rotate(${d}deg)`;
+    if (deg) deg.textContent = `${d}° ${bearingName(c.dir)}`;
+  }
+  const tw = $("tapeWrap");
+  if (tw) tw.innerHTML = tapeSVG(altN, vrate(baseTop) || 0, isGround);
+
+  // keep the radar blips drifting too (cheap; canvas redraws anyway)
+  const moved = list.map(x => extrapolate(x, dt)).sort((p,q)=>(p.dst??1e9)-(q.dst??1e9));
+  radar.setData(moved, moved[0]);
 }
 
 // ---- METAR weather, decoded into plain English ----
@@ -767,6 +866,7 @@ $("apply").onclick = () => {
 radar.init(); radar.start();
 refreshMetar();
 state.metarTimer = setInterval(refreshMetar, 300000);  // METAR updates ~hourly
+state.predictTimer = setInterval(predict, 500);        // dead-reckon between fetches
 // Default to HOME when this client has no saved location — so every device
 // (including phones over http, where geolocation is blocked) loads data at once.
 let atHome = false;
