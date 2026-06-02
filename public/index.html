@@ -251,7 +251,10 @@ try {
   // Only restore a location set deliberately (Home/Apply) or via a *good* GPS fix.
   // Older builds persisted coarse IP-based geolocation with no source tag — ignore
   // those so we fall back to HOME instead of a wrong city (e.g. the AZ ISP egress).
-  if (saved.lat != null && ["home","manual","geo"].includes(saved.locSource)) {
+  // Only restore a *deliberately* chosen location (Home button / Apply). Geolocation
+  // is never persisted, and untagged values from old builds are ignored — so a bad
+  // GPS/IP fix can never come back on reload; we fall back to HOME instead.
+  if (saved.lat != null && ["home","manual"].includes(saved.locSource)) {
     state.lat = saved.lat; state.lon = saved.lon; state.locSource = saved.locSource;
     $("lat").value = saved.lat; $("lon").value = saved.lon;
   }
@@ -846,14 +849,22 @@ $("useLoc").onclick = () => {
   navigator.geolocation.getCurrentPosition(
     pos => {
       const acc = pos.coords.accuracy;   // metres, 95% radius
-      // A huge radius means an IP/Wi-Fi guess (often a different city) — refuse it
-      // rather than silently jumping the dashboard there.
+      const la = +pos.coords.latitude.toFixed(4), lo = +pos.coords.longitude.toFixed(4);
+      // A huge radius means an IP/Wi-Fi guess (often a different city) — refuse it.
       if (acc != null && acc > 5000){
         setStatus(`ignored a low-accuracy fix (±${(acc/1000).toFixed(0)} km, looks IP-based) — tap 🏠 Home or type coords`, "err");
         return;
       }
-      state.lat = +pos.coords.latitude.toFixed(4);
-      state.lon = +pos.coords.longitude.toFixed(4);
+      // Sanity check: this is a home dashboard. A fix far from HOME is almost
+      // certainly a bogus IP/VPN location (the AZ problem), even if it claims to
+      // be accurate. Refuse it rather than teleporting the dashboard.
+      const far = geoDistNm(HOME.lat, HOME.lon, la, lo);
+      if (far > 200){
+        setStatus(`GPS fix is ${Math.round(far)} nm from home — looks wrong, ignored. Tap 🏠 Home or type coords.`, "err");
+        return;
+      }
+      state.lat = la;
+      state.lon = lo;
       state.locSource = "geo";
       $("lat").value = state.lat; $("lon").value = state.lon;
       $("locText").innerHTML = `<span class="dot live"></span>GPS: <b>${state.lat}, ${state.lon}</b> (±${Math.round(acc)} m, this session)`;
