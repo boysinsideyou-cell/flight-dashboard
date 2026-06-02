@@ -42,7 +42,7 @@ async function handleApi(url) {
   if (p === "/api/callsign") {
     const cs = (q.get("cs") || "").trim().toUpperCase();
     if (!cs) return jsonError("missing cs", 400);
-    return proxy(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(cs)}`, 86400);
+    return proxy(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(cs)}`, 3600);
   }
   if (p === "/api/aircraft") {
     const hex = (q.get("hex") || "").trim().toUpperCase();
@@ -60,6 +60,16 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/api/")) return handleApi(url);
-    return env.ASSETS.fetch(request); // static files from ./public
+    // Static files from ./public. Serve HTML with no-cache so dashboard updates
+    // reach every client immediately (otherwise a stale index.html lingers and
+    // old bugs—e.g. the location handling—appear "unfixed").
+    const res = await env.ASSETS.fetch(request);
+    const ct = res.headers.get("content-type") || "";
+    if (ct.includes("text/html")) {
+      const h = new Headers(res.headers);
+      h.set("cache-control", "no-cache, no-store, must-revalidate");
+      return new Response(res.body, { status: res.status, headers: h });
+    }
+    return res;
   },
 };
