@@ -95,13 +95,30 @@ served over HTTPS, the **"Use my location"** button works on phones too.
 > the proxy. The default map centers on the `HOME` coords baked into `public/index.html`;
 > edit that constant and push if you'd rather not expose a specific location.
 
-## Departure / arrival times — not included (and why)
-Scheduled (or estimated) **departure/arrival times are not available** from ADS-B or any
-of the free, keyless APIs above — ADS-B broadcasts position/velocity, not schedules.
-Getting live times requires a flight-schedule API with an account/key, e.g.
-[AeroDataBox](https://aerodatabox.com) (free tier via RapidAPI) or
-[FlightAware AeroAPI](https://www.flightaware.com/commercial/aeroapi/) (paid). The UI
-leaves a labelled slot for this; wiring one in is a small `server.py` proxy + a key.
+## Accurate route + scheduled times (optional, keyed — AeroDataBox)
+ADS-B has no schedule data, and the free adsbdb route is the *typical* route for a
+callsign (so return legs / reused callsigns can be wrong). For **today's actual
+origin/destination + scheduled/estimated times**, the dashboard can use
+[AeroDataBox](https://aerodatabox.com) (looked up by the aircraft's Mode-S hex). It's
+**optional**: with no key, the "Live schedule" toggle simply falls back to the adsbdb
+route — nothing breaks.
+
+**Setup (free tier):**
+1. Create a [RapidAPI](https://rapidapi.com) account → subscribe to **AeroDataBox**
+   (the **Basic** plan is free; note the monthly request cap). Copy your `X-RapidAPI-Key`.
+2. **Cloud (Cloudflare):** dashboard → your Worker **flight-dashboard** → **Settings** →
+   **Variables and Secrets** → add a **Secret** named **`AERODATABOX_KEY`** = your key
+   → **Deploy**. (Optional `AERODATABOX_HOST`, defaults to `aerodatabox.p.rapidapi.com`.)
+   The key lives only in Cloudflare — never in the repo.
+3. **Local / Pi:** set an env var before running:
+   ```powershell
+   $env:AERODATABOX_KEY = "your-key"; python server.py
+   ```
+
+**Quota care:** schedule is fetched only for the **closest** aircraft, cached per hex
+(client + 10-min edge cache), and gated by the **Live schedule** checkbox — turn it off
+to stop using quota. Endpoint: `GET /api/schedule?hex=<mode-s>` → normalized
+`{ found, from, to, dep, arr, status, airline }`.
 
 ## Notes
 - Data is community-sourced ADS-B; coverage is best near populated areas and worsens

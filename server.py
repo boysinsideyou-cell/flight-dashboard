@@ -78,6 +78,63 @@ def _fetch(url, data=None, method="GET"):
         return 502, json.dumps({"error": f"upstream unreachable: {e.reason}"}).encode()
 
 
+def _schedule(hexid):
+    """Accurate current route + scheduled times via AeroDataBox (keyed, optional).
+    Returns JSON bytes; {found:false} when no key / no match / error so the UI
+    falls back to the adsbdb typical route. Key from AERODATABOX_KEY env var."""
+    key = os.environ.get("AERODATABOX_KEY")
+    if not key:
+        return json.dumps({"found": False, "reason": "no_key"}).encode()
+    ckey = f"sched:{hexid.upper()}"
+    now = time.time()
+    hit = _cache.get(ckey)
+    if hit and now - hit[0] < 600:
+        return hit[1]
+    host = os.environ.get("AERODATABOX_HOST", "aerodatabox.p.rapidapi.com")
+    url = (f"https://{host}/flights/Icao24/{hexid}"
+           "?withAircraftImage=false&withLocation=false")
+    req = urllib.request.Request(url, headers={
+        "X-RapidAPI-Key": key, "X-RapidAPI-Host": host, "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+    except Exception as e:
+        return json.dumps({"found": False, "reason": "error"}).encode()
+    flights = data if isinstance(data, list) else data.get("flights", [])
+    if not flights:
+        out = json.dumps({"found": False}).encode()
+        _cache[ckey] = (now, out)
+        return out
+
+    def airport(side):
+        a = (side or {}).get("airport") or {}
+        if not a:
+            return None
+        return {"iata": a.get("iata"), "icao": a.get("icao"),
+                "name": a.get("shortName") or a.get("name"), "city": a.get("municipalityName")}
+
+    def times(side):
+        if not side:
+            return None
+        pick = lambda x: (x or {}).get("local") or (x or {}).get("utc")
+        return {"sched": pick(side.get("scheduledTime")),
+                "revised": pick(side.get("revisedTime")),
+                "runway": pick(side.get("runwayTime"))}
+
+    import re as _re
+    f = next((x for x in flights if _re.search(
+        r"en.?route|airborne|expected|boarding|departed|approach", x.get("status", ""), _re.I)), flights[-1])
+    out = json.dumps({
+        "found": True, "number": f.get("number"), "callsign": f.get("callSign"),
+        "status": f.get("status"), "airline": (f.get("airline") or {}).get("name"),
+        "from": airport(f.get("departure")), "to": airport(f.get("arrival")),
+        "dep": times(f.get("departure")), "arr": times(f.get("arrival")),
+    }).encode()
+    _cache[ckey] = (now, out)
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     # quieter logging
     def log_message(self, fmt, *args):
@@ -144,6 +201,13 @@ class Handler(BaseHTTPRequestHandler):
             url = f"{METAR_BASE}/metar?ids={ids}&format=json"
             status, body = _cached(f"metar:{ids}", url, TTL_METAR)
             return self._send(status, body)
+
+        # Accurate current route + scheduled times via AeroDataBox (keyed; optional).
+        if path == "/api/schedule":
+            hexid = parse_qs(parsed.query).get("hex", [""])[0].strip()
+            if not hexid:
+                return self._send(400, json.dumps({"error": "missing hex"}))
+            return self._send(200, _schedule(hexid))
 
         return self._send(404, json.dumps({"error": "not found"}))
 

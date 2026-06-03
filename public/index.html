@@ -74,6 +74,10 @@
   .route { margin-top: 4px; font-size: 14px; color: var(--accent2); min-height: 18px; }
   .route .arr { color: var(--muted); margin: 0 6px; }
   .route .note { color: var(--muted); font-size: 12px; font-weight: 400; }
+  .times { margin-top: 3px; font-size: 13px; color: var(--text); min-height: 16px; }
+  .times small { color: var(--muted); }
+  .times .badge { display:inline-block; margin-left:6px; padding:1px 7px; border-radius:20px;
+    font-size:11px; background:var(--panel2); border:1px solid var(--line); color:var(--accent); }
 
   .enrich { display:flex; gap:16px; margin-top:18px; align-items:flex-start; }
   .enrich img { width: 150px; height: 100px; object-fit: cover; border-radius: 10px; border:1px solid var(--line); flex:0 0 auto; background:var(--panel2); }
@@ -195,6 +199,9 @@
   <label style="display:inline-flex; align-items:center; gap:6px;">
     min gs <input id="minGs" type="number" min="0" max="600" value="0" style="width:64px;"> kt
   </label>
+  <label style="display:inline-flex; align-items:center; gap:6px;" title="Live route + scheduled times via AeroDataBox (needs an API key; uses quota)">
+    <input id="schedOn" type="checkbox" checked style="width:auto;"> Live schedule
+  </label>
 </div>
 
 <main>
@@ -235,7 +242,7 @@ const $ = id => document.getElementById(id);
 const HOME = { lat: 32.7262, lon: -117.1262 };
 let state = {
   lat: null, lon: null, radius: 50, intervalSec: 10,
-  airborneOnly: true, minGs: 0,
+  airborneOnly: true, minGs: 0, schedOn: true,
   metarStation: "KSAN", locSource: null,
   timer: null, metarTimer: null, predictTimer: null, lastClosestHex: null,
   base: null,          // { t, list:[...] } snapshot from the last real fetch
@@ -262,13 +269,15 @@ try {
   if (saved.intervalSec) { state.intervalSec = saved.intervalSec; $("interval").value = saved.intervalSec; }
   if (saved.airborneOnly != null) { state.airborneOnly = saved.airborneOnly; $("airborneOnly").checked = saved.airborneOnly; }
   if (saved.minGs != null) { state.minGs = saved.minGs; $("minGs").value = saved.minGs; }
+  if (saved.schedOn != null) { state.schedOn = saved.schedOn; $("schedOn").checked = saved.schedOn; }
   if (saved.metarStation) { state.metarStation = saved.metarStation; $("wxStation").value = saved.metarStation; }
 } catch (e) {}
 function persist() {
   localStorage.setItem("flightdash", JSON.stringify({
     lat: state.lat, lon: state.lon, locSource: state.locSource,
     radius: state.radius, intervalSec: state.intervalSec,
-    airborneOnly: state.airborneOnly, minGs: state.minGs, metarStation: state.metarStation
+    airborneOnly: state.airborneOnly, minGs: state.minGs, schedOn: state.schedOn,
+    metarStation: state.metarStation
   }));
 }
 
@@ -428,6 +437,7 @@ function renderHero(a){
         <div class="callsign">${cs}<small>${a.t || "unknown type"} · ${a.r || "reg —"} · ${a.hex}</small></div>
         <div class="airline" id="airline"></div>
         <div class="route" id="route"></div>
+        <div class="times" id="times"></div>
       </div>
       <div class="compass" title="Direction from you to the aircraft">
         <div class="lbl">look toward</div>
@@ -457,12 +467,14 @@ function renderHero(a){
 //  an earlier leg's route stuck when its callsign changed.)
 const acCache = {};      // hex -> aircraft record | null
 const routeCache = {};   // callsign -> { airline, route } | null
+const schedCache = {};   // hex -> AeroDataBox normalized flight | null
 function airportLabel(ap){
   if (!ap) return null;
   const code = ap.iata_code || ap.icao_code || "";
   const city = (ap.municipality || ap.name || "").split(",")[0];
   return { code, city, full: `${city || ap.name || code}` };
 }
+function hhmm(s){ if (!s) return null; const m = String(s).match(/\d{1,2}:\d{2}/); return m ? m[0] : null; }
 async function enrichClosest(a, cs){
   const hex = a.hex;
   if (acCache[hex] === undefined){
@@ -488,22 +500,56 @@ async function enrichClosest(a, cs){
       }
     } catch (e) {}
   }
+  // Accurate current route + scheduled times (keyed AeroDataBox). Closest-only,
+  // cached per hex, gated by the toggle — to respect the small free quota.
+  if (state.schedOn && schedCache[hex] === undefined){
+    schedCache[hex] = null;
+    try {
+      const r = await fetch(`/api/schedule?hex=${encodeURIComponent(hex)}`);
+      const d = await r.json();
+      if (d && d.found) schedCache[hex] = d;
+    } catch (e) {}
+  }
   if (state.lastClosestHex !== hex) return;   // closest changed mid-fetch
   const rt = key ? routeCache[key] : null;
-  paintEnrich({ ac: acCache[hex], airline: rt && rt.airline, route: rt && rt.route });
+  paintEnrich({ ac: acCache[hex], airline: rt && rt.airline, route: rt && rt.route, sched: schedCache[hex] });
 }
 function paintEnrich(rec){
-  const al = $("airline"), ro = $("route"), en = $("enrich");
+  const al = $("airline"), ro = $("route"), tm = $("times"), en = $("enrich");
   if (!al || !ro || !en) return;
+  const sc = rec.sched;
+  if (tm) tm.innerHTML = "";
+  if (sc && (sc.from || sc.to)){
+    // Live, accurate flight (today's actual leg + times).
+    al.textContent = sc.airline || rec.airline || "";
+    const f = sc.from, t = sc.to;
+    const ac1 = x => x ? `<b>${x.iata || x.icao || "?"}</b> ${(x.city||x.name||"").split(",")[0]}` : "—";
+    ro.innerHTML = `${ac1(f)}<span class="arr">→</span>${ac1(t)}`;
+    if (tm){
+      const dep = sc.dep || {}, arr = sc.arr || {};
+      const depS = hhmm(dep.runway || dep.revised || dep.sched), arrS = hhmm(arr.runway || arr.revised || arr.sched);
+      const parts = [];
+      if (depS) parts.push(`dep <b>${depS}</b>`);
+      if (arrS) parts.push(`arr <b>${arrS}</b>`);
+      const status = sc.status ? `<span class="badge">${sc.status}</span>` : "";
+      tm.innerHTML = (parts.length ? parts.join(" → ") + " <small>local</small> " : "") + status;
+    }
+    paintAircraftMeta(rec.ac, en);
+    return;
+  }
+  // Fallback: adsbdb "typical route" (may be a prior leg).
   al.textContent = rec.airline || "";
   if (rec.route && (rec.route.from || rec.route.to)){
     const f = rec.route.from, t = rec.route.to;
     ro.innerHTML = `${f ? `<b>${f.code}</b> ${f.city}` : "—"}<span class="arr">→</span>${t ? `<b>${t.code}</b> ${t.city}` : "—"}`
-      + ` <span class="note" title="adsbdb stores one typical route per callsign; return legs or reused callsigns can differ from today's flight. Live times/route need a keyed schedule API.">· typical route for this callsign (may differ today) ⓘ</span>`;
+      + ` <span class="note" title="adsbdb stores one typical route per callsign; return legs or reused callsigns can differ from today's flight. Add an AeroDataBox key for live, accurate route + times.">· typical route (may differ today) ⓘ</span>`;
   } else {
     ro.innerHTML = `<span class="note">No route on file for this callsign.</span>`;
   }
-  const ac = rec.ac;
+  paintAircraftMeta(rec.ac, en);
+}
+function paintAircraftMeta(ac, en){
+  if (!en) return;
   if (ac){
     const owner = ac.registered_owner || "—";
     const make = [ac.manufacturer, ac.type].filter(Boolean).join(" ");
@@ -886,6 +932,7 @@ $("useHome").onclick = () => {
 };
 $("airborneOnly").onchange = () => { state.airborneOnly = $("airborneOnly").checked; persist(); tick(); };
 $("minGs").onchange = () => { state.minGs = Math.max(0, Math.min(600, parseInt($("minGs").value)||0)); persist(); tick(); };
+$("schedOn").onchange = () => { state.schedOn = $("schedOn").checked; persist(); tick(); };
 $("wxStation").onchange = () => {
   state.metarStation = ($("wxStation").value || "").trim().toUpperCase();
   $("wxStation").value = state.metarStation;

@@ -27,9 +27,63 @@ async function proxy(url, ttl) {
   }
 }
 
-async function handleApi(url) {
+const jsonOk = (obj, ttl = 300) =>
+  new Response(JSON.stringify(obj), {
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": `public, max-age=${ttl}` },
+  });
+
+// --- AeroDataBox flight normalisation (accurate current route + times) ---
+function adbAirport(side) {
+  const a = side && side.airport;
+  if (!a) return null;
+  return { iata: a.iata || null, icao: a.icao || null, name: a.shortName || a.name || null, city: a.municipalityName || null };
+}
+function adbTimes(side) {
+  if (!side) return null;
+  const pick = (x) => (x ? x.local || x.utc || null : null);
+  return { sched: pick(side.scheduledTime), revised: pick(side.revisedTime), runway: pick(side.runwayTime) };
+}
+function adbPick(list) {
+  if (!Array.isArray(list) || !list.length) return null;
+  const active = list.find((f) => /en.?route|airborne|expected|boarding|departed|approach/i.test(f.status || ""));
+  return active || list[list.length - 1];
+}
+function adbNormalize(f) {
+  return {
+    found: true, number: f.number || null, callsign: f.callSign || null, status: f.status || null,
+    airline: f.airline ? f.airline.name || null : null,
+    from: adbAirport(f.departure), to: adbAirport(f.arrival),
+    dep: adbTimes(f.departure), arr: adbTimes(f.arrival),
+  };
+}
+
+async function handleApi(url, env) {
   const p = url.pathname;
   const q = url.searchParams;
+
+  // Accurate, current route + scheduled times via AeroDataBox (keyed; optional).
+  // Falls back gracefully (found:false) when no key / no match / rate-limited, so
+  // the UI keeps showing the adsbdb "typical route" instead of breaking.
+  if (p === "/api/schedule") {
+    const hex = (q.get("hex") || "").trim();
+    if (!hex) return jsonError("missing hex", 400);
+    if (!env || !env.AERODATABOX_KEY) return jsonOk({ found: false, reason: "no_key" }, 60);
+    const host = env.AERODATABOX_HOST || "aerodatabox.p.rapidapi.com";
+    const u = `https://${host}/flights/Icao24/${encodeURIComponent(hex)}?withAircraftImage=false&withLocation=false`;
+    try {
+      const r = await fetch(u, {
+        headers: { "X-RapidAPI-Key": env.AERODATABOX_KEY, "X-RapidAPI-Host": host, accept: "application/json" },
+        cf: { cacheTtl: 600, cacheEverything: true }, // conserve the small free quota
+      });
+      if (!r.ok) return jsonOk({ found: false, reason: "http_" + r.status }, 120);
+      const data = await r.json();
+      const flights = Array.isArray(data) ? data : data.flights || [];
+      const f = adbPick(flights);
+      return jsonOk(f ? adbNormalize(f) : { found: false }, 600);
+    } catch (e) {
+      return jsonOk({ found: false, reason: "error" }, 60);
+    }
+  }
 
   if (p === "/api/nearby") {
     const lat = parseFloat(q.get("lat"));
@@ -59,7 +113,7 @@ async function handleApi(url) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname.startsWith("/api/")) return handleApi(url);
+    if (url.pathname.startsWith("/api/")) return handleApi(url, env);
     // Static files from ./public. Serve HTML with no-cache so dashboard updates
     // reach every client immediately (otherwise a stale index.html lingers and
     // old bugs—e.g. the location handling—appear "unfixed").
