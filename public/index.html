@@ -80,6 +80,8 @@
   .times small { color: var(--muted); font-weight: 400; }
   .times .badge { display:inline-block; margin-left:6px; padding:2px 9px; border-radius:20px;
     font-size:12px; font-weight:600; background:var(--panel2); border:1px solid var(--line); color:var(--accent); }
+  .times .badge.late { color:var(--danger); border-color:rgba(248,113,113,.4); background:rgba(248,113,113,.12); }
+  .times .badge.early, .times .badge.ontime { color:var(--accent2); border-color:rgba(52,211,153,.4); background:rgba(52,211,153,.12); }
   /* flown / remaining progress */
   .prog { margin-top: 8px; min-height: 14px; }
   .prog .pbar { display:block; height:6px; border-radius:6px; background:var(--panel2); border:1px solid var(--line); overflow:hidden; }
@@ -527,19 +529,35 @@ async function enrichClosest(a, cs){
   if (state.lastClosestHex !== hex) return;   // closest changed mid-fetch
   const rt = key ? routeCache[key] : null;
   paintEnrich({ ac: acCache[hex], airline: rt && rt.airline, route: rt && rt.route,
-    sched: schedCache[hex], photo: photoCache[hex], planeLat: a.lat, planeLon: a.lon });
+    sched: schedCache[hex], photo: photoCache[hex], planeLat: a.lat, planeLon: a.lon, gs: a.gs });
 }
-// distance flown / remaining along the great circle origin → plane → destination
-function renderProgress(from, to, plat, plon){
-  const pr = $("prog"); if (!pr) return;
-  if (!from || !to || from.lat == null || to.lat == null || plat == null){ pr.innerHTML = ""; return; }
+// --- nav math: great-circle flown / remaining + a live ETA from ground speed ---
+function navOf(from, to, plat, plon, gs){
+  if (!from || !to || from.lat == null || to.lat == null || plat == null) return null;
   const flown = geoDistNm(from.lat, from.lon, plat, plon);
   const togo  = geoDistNm(plat, plon, to.lat, to.lon);
   const total = flown + togo;
   const pct = total > 0 ? Math.max(0, Math.min(100, flown/total*100)) : 0;
+  // ETA from current ground speed (rough — ignores descent/routing/holding).
+  const etaMin = togo <= 1 ? 0 : (gs && gs > 40 ? togo / gs * 60 : null);
+  return { flown, togo, pct, etaMin };
+}
+function fmtDur(min){ if (min == null) return ""; if (min < 1) return "now"; const h = Math.floor(min/60), m = Math.round(min%60); return h ? `${h}h ${m}m` : `${m}m`; }
+function parseADB(s){ if (!s) return null; const d = new Date(String(s).replace(" ", "T")); return isNaN(d) ? null : d; }
+function shiftHHMM(s, mins){ const m = String(s||"").match(/(\d{1,2}):(\d{2})/); if (!m) return null; let t = (+m[1])*60 + (+m[2]) + Math.round(mins); t = ((t % 1440) + 1440) % 1440; return String(Math.floor(t/60)).padStart(2,"0") + ":" + String(t%60).padStart(2,"0"); }
+function delayBadge(min){
+  if (min == null) return "";
+  if (min >= 6)  return ` <span class="badge late">${min} min late</span>`;
+  if (min <= -6) return ` <span class="badge early">${Math.abs(min)} min early</span>`;
+  return ` <span class="badge ontime">on time</span>`;
+}
+function renderProgress(nav){
+  const pr = $("prog"); if (!pr) return;
+  if (!nav){ pr.innerHTML = ""; return; }
+  const eta = nav.etaMin != null ? ` · ETA in <b>${fmtDur(nav.etaMin)}</b>` : "";
   pr.innerHTML =
-    `<span class="pbar"><i style="width:${pct.toFixed(0)}%"></i></span>` +
-    `<span class="plabel"><b>${Math.round(flown).toLocaleString()}</b> nm flown · <b>${Math.round(togo).toLocaleString()}</b> nm to go · ${pct.toFixed(0)}%</span>`;
+    `<span class="pbar"><i style="width:${nav.pct.toFixed(0)}%"></i></span>` +
+    `<span class="plabel"><b>${Math.round(nav.flown).toLocaleString()}</b> nm flown · <b>${Math.round(nav.togo).toLocaleString()}</b> nm to go · ${nav.pct.toFixed(0)}%${eta}</span>`;
 }
 function paintEnrich(rec){
   const al = $("airline"), ro = $("route"), tm = $("times"), en = $("enrich");
@@ -552,16 +570,31 @@ function paintEnrich(rec){
     const f = sc.from, t = sc.to;
     const ac1 = x => x ? `<b>${x.iata || x.icao || "?"}</b> <span class="city">${(x.city||x.name||"").split(",")[0]}</span>` : "—";
     ro.innerHTML = `${ac1(f)}<span class="arr">→</span>${ac1(t)}`;
+    const nav = navOf(sc.from, sc.to, rec.planeLat, rec.planeLon, rec.gs);
     if (tm){
       const dep = sc.dep || {}, arr = sc.arr || {};
-      const depS = hhmm(dep.runway || dep.revised || dep.sched), arrS = hhmm(arr.runway || arr.revised || arr.sched);
-      const parts = [];
-      if (depS) parts.push(`Dep <b>${depS}</b>`);
-      if (arrS) parts.push(`Arr <b>${arrS}</b>`);
-      const status = sc.status ? `<span class="badge">${sc.status}</span>` : "";
-      tm.innerHTML = (parts.length ? parts.join(" &nbsp;→&nbsp; ") + " <small>local</small> " : "") + status;
+      const depS = hhmm(dep.runway || dep.revised || dep.sched);
+      const schedArrS = hhmm(arr.sched);
+      // ETA: prefer the provider's actual/estimated arrival; else compute from speed.
+      const schedArrD = parseADB(arr.sched);
+      const provEtaD  = parseADB(arr.runway || arr.revised);
+      const ourEtaD   = (nav && nav.etaMin != null) ? new Date(Date.now() + nav.etaMin*60000) : null;
+      const etaD = provEtaD || ourEtaD;
+      let etaS = hhmm(arr.runway || arr.revised), delayMin = null;
+      if (etaD && schedArrD){
+        delayMin = Math.round((etaD - schedArrD)/60000);
+        if (!etaS && schedArrS) etaS = shiftHHMM(schedArrS, delayMin);
+      }
+      let html = "";
+      if (depS) html += `Dep <b>${depS}</b> &nbsp;·&nbsp; `;
+      if (schedArrS) html += `Arr <b>${schedArrS}</b>`;
+      if (etaS && (delayMin == null || delayMin !== 0)) html += ` → ETA <b>${etaS}</b>`;
+      if (schedArrS || etaS) html += ` <small>local</small>`;
+      html += delayBadge(delayMin);
+      if (sc.status) html += `<span class="badge">${sc.status}</span>`;
+      tm.innerHTML = html;
     }
-    renderProgress(sc.from, sc.to, rec.planeLat, rec.planeLon);
+    renderProgress(nav);
     paintAircraftMeta(rec.ac, rec.photo, en);
     return;
   }
@@ -571,10 +604,10 @@ function paintEnrich(rec){
     const f = rec.route.from, t = rec.route.to;
     ro.innerHTML = `${f ? `<b>${f.code}</b> <span class="city">${f.city}</span>` : "—"}<span class="arr">→</span>${t ? `<b>${t.code}</b> <span class="city">${t.city}</span>` : "—"}`
       + ` <span class="note" title="adsbdb stores one typical route per callsign; return legs or reused callsigns can differ from today's flight. Add an AeroDataBox key for live, accurate route + times.">· typical route ⓘ</span>`;
-    renderProgress(f, t, rec.planeLat, rec.planeLon);
+    renderProgress(navOf(f, t, rec.planeLat, rec.planeLon, rec.gs));
   } else {
     ro.innerHTML = `<span class="note">No route on file for this callsign.</span>`;
-    renderProgress(null, null, null, null);
+    renderProgress(null);
   }
   paintAircraftMeta(rec.ac, rec.photo, en);
 }
