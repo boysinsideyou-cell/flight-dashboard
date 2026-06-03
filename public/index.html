@@ -71,16 +71,26 @@
   .callsign { font-size: 38px; font-weight: 700; line-height: 1; }
   .callsign small { display:block; font-size: 13px; color: var(--muted); font-weight: 500; margin-top: 6px; }
   .airline { margin-top: 8px; font-size: 15px; font-weight: 600; color: var(--text); min-height: 18px; }
-  .route { margin-top: 4px; font-size: 14px; color: var(--accent2); min-height: 18px; }
-  .route .arr { color: var(--muted); margin: 0 6px; }
+  .route { margin-top: 6px; font-size: 20px; font-weight: 700; color: var(--accent2); min-height: 22px; }
+  .route b { font-size: 22px; }
+  .route .city { font-size: 14px; font-weight: 500; color: var(--text); }
+  .route .arr { color: var(--muted); margin: 0 8px; font-weight: 400; }
   .route .note { color: var(--muted); font-size: 12px; font-weight: 400; }
-  .times { margin-top: 3px; font-size: 13px; color: var(--text); min-height: 16px; }
-  .times small { color: var(--muted); }
-  .times .badge { display:inline-block; margin-left:6px; padding:1px 7px; border-radius:20px;
-    font-size:11px; background:var(--panel2); border:1px solid var(--line); color:var(--accent); }
+  .times { margin-top: 5px; font-size: 16px; font-weight: 600; color: var(--text); min-height: 18px; }
+  .times small { color: var(--muted); font-weight: 400; }
+  .times .badge { display:inline-block; margin-left:6px; padding:2px 9px; border-radius:20px;
+    font-size:12px; font-weight:600; background:var(--panel2); border:1px solid var(--line); color:var(--accent); }
+  /* flown / remaining progress */
+  .prog { margin-top: 8px; min-height: 14px; }
+  .prog .pbar { display:block; height:6px; border-radius:6px; background:var(--panel2); border:1px solid var(--line); overflow:hidden; }
+  .prog .pbar i { display:block; height:100%; background:linear-gradient(90deg,var(--accent2),var(--accent)); }
+  .prog .plabel { display:block; margin-top:4px; font-size:12px; color:var(--muted); }
+  .prog .plabel b { color:var(--text); font-weight:700; }
 
   .enrich { display:flex; gap:16px; margin-top:18px; align-items:flex-start; }
-  .enrich img { width: 150px; height: 100px; object-fit: cover; border-radius: 10px; border:1px solid var(--line); flex:0 0 auto; background:var(--panel2); }
+  .enrich .photo { margin:0; flex:0 0 auto; }
+  .enrich .photo img { width: 180px; height: 120px; object-fit: cover; border-radius: 10px; border:1px solid var(--line); background:var(--panel2); display:block; }
+  .enrich .photo figcaption { margin-top:4px; font-size:10px; color:var(--muted); max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .enrich .meta { font-size: 13px; line-height: 1.7; }
   .enrich .meta .row span { color: var(--muted); display:inline-block; min-width: 92px; }
   .enrich .meta .row b { font-weight: 600; }
@@ -386,15 +396,8 @@ function render(ac){
   radar.setData(ac, ac[0]);
   $("radarRange").textContent = (state.radius||50) + " nm";
   renderMap(ac, ac[0]);
-  // Snapshot the fetch for the 0.5s interpolation loop.
-  state.base = { t: Date.now(), list: ac.map(x => ({
-    hex:x.hex, lat:x.lat, lon:x.lon, alt_baro:x.alt_baro, gs:x.gs,
-    track:x.track, true_heading:x.true_heading, mag_heading:x.mag_heading,
-    baro_rate:x.baro_rate, geom_rate:x.geom_rate, flight:x.flight, t:x.t,
-    dst:x.dst, dir:x.dir,
-  })) };
   if (!ac.length){
-    state.closestHex = null; state.prevClosest = null;
+    state.prevClosest = null;
     const why = state.airborneOnly ? "airborne aircraft" : "aircraft";
     $("heroBody").innerHTML = `<div class="empty">No ${why} within ${state.radius} nm right now.${state.airborneOnly ? "<br><small>Parked/taxiing traffic is hidden — untick “Airborne only” to see it.</small>" : ""}</div>`;
     $("stateBody").innerHTML = `<div class="empty">—</div>`;
@@ -438,6 +441,7 @@ function renderHero(a){
         <div class="airline" id="airline"></div>
         <div class="route" id="route"></div>
         <div class="times" id="times"></div>
+        <div class="prog" id="prog"></div>
       </div>
       <div class="compass" title="Direction from you to the aircraft">
         <div class="lbl">look toward</div>
@@ -448,7 +452,7 @@ function renderHero(a){
     </div>
     <div class="grid">
       <div class="stat"><div class="k">Distance ${trendArrow(state.trends.dst, 0.15)}</div><div class="v"><span id="vDist">${a.dst!=null?a.dst.toFixed(1):"—"}</span> <small>nm / <span id="vDistMi">${distMi}</span> mi</small></div></div>
-      <div class="stat"><div class="k">Altitude ${trendArrow(state.trends.alt, 40)}</div><div class="v"><span id="vAlt">${alt.v}</span> <small>${alt.s} ${trend}</small></div></div>
+      <div class="stat"><div class="k">Altitude ${trendArrow(rate ?? 0, 100)}</div><div class="v"><span id="vAlt">${alt.v}</span> <small>${alt.s} ${trend}</small></div></div>
       <div class="stat"><div class="k">Ground speed ${trendArrow(state.trends.gs, 3)}</div><div class="v"><span id="vGs">${a.gs!=null?Math.round(a.gs):"—"}</span> <small>kt</small></div></div>
       <div class="stat"><div class="k">Heading</div><div class="v">${hdg!=null?Math.round(hdg):"—"}<small>°</small></div></div>
       <div class="stat"><div class="k">Squawk</div><div class="v">${a.squawk || "—"}</div></div>
@@ -468,11 +472,12 @@ function renderHero(a){
 const acCache = {};      // hex -> aircraft record | null
 const routeCache = {};   // callsign -> { airline, route } | null
 const schedCache = {};   // hex -> AeroDataBox normalized flight | null
+const photoCache = {};   // hex -> planespotters photo | null
 function airportLabel(ap){
   if (!ap) return null;
   const code = ap.iata_code || ap.icao_code || "";
   const city = (ap.municipality || ap.name || "").split(",")[0];
-  return { code, city, full: `${city || ap.name || code}` };
+  return { code, city, lat: (ap.latitude ?? null), lon: (ap.longitude ?? null) };
 }
 function hhmm(s){ if (!s) return null; const m = String(s).match(/\d{1,2}:\d{2}/); return m ? m[0] : null; }
 async function enrichClosest(a, cs){
@@ -483,6 +488,15 @@ async function enrichClosest(a, cs){
       const r = await fetch(`/api/aircraft?hex=${encodeURIComponent(hex)}`);
       const d = await r.json();
       if (d.response && d.response.aircraft) acCache[hex] = d.response.aircraft;
+    } catch (e) {}
+  }
+  // Photo (planespotters, by hex) — better quality, proper attribution.
+  if (photoCache[hex] === undefined){
+    photoCache[hex] = null;
+    try {
+      const r = await fetch(`/api/photo?hex=${encodeURIComponent(hex)}`);
+      const d = await r.json();
+      if (d && d.photos && d.photos.length) photoCache[hex] = d.photos[0];
     } catch (e) {}
   }
   const key = (cs && cs !== hex) ? cs.trim().toUpperCase() : null;
@@ -512,7 +526,20 @@ async function enrichClosest(a, cs){
   }
   if (state.lastClosestHex !== hex) return;   // closest changed mid-fetch
   const rt = key ? routeCache[key] : null;
-  paintEnrich({ ac: acCache[hex], airline: rt && rt.airline, route: rt && rt.route, sched: schedCache[hex] });
+  paintEnrich({ ac: acCache[hex], airline: rt && rt.airline, route: rt && rt.route,
+    sched: schedCache[hex], photo: photoCache[hex], planeLat: a.lat, planeLon: a.lon });
+}
+// distance flown / remaining along the great circle origin → plane → destination
+function renderProgress(from, to, plat, plon){
+  const pr = $("prog"); if (!pr) return;
+  if (!from || !to || from.lat == null || to.lat == null || plat == null){ pr.innerHTML = ""; return; }
+  const flown = geoDistNm(from.lat, from.lon, plat, plon);
+  const togo  = geoDistNm(plat, plon, to.lat, to.lon);
+  const total = flown + togo;
+  const pct = total > 0 ? Math.max(0, Math.min(100, flown/total*100)) : 0;
+  pr.innerHTML =
+    `<span class="pbar"><i style="width:${pct.toFixed(0)}%"></i></span>` +
+    `<span class="plabel"><b>${Math.round(flown).toLocaleString()}</b> nm flown · <b>${Math.round(togo).toLocaleString()}</b> nm to go · ${pct.toFixed(0)}%</span>`;
 }
 function paintEnrich(rec){
   const al = $("airline"), ro = $("route"), tm = $("times"), en = $("enrich");
@@ -523,49 +550,53 @@ function paintEnrich(rec){
     // Live, accurate flight (today's actual leg + times).
     al.textContent = sc.airline || rec.airline || "";
     const f = sc.from, t = sc.to;
-    const ac1 = x => x ? `<b>${x.iata || x.icao || "?"}</b> ${(x.city||x.name||"").split(",")[0]}` : "—";
+    const ac1 = x => x ? `<b>${x.iata || x.icao || "?"}</b> <span class="city">${(x.city||x.name||"").split(",")[0]}</span>` : "—";
     ro.innerHTML = `${ac1(f)}<span class="arr">→</span>${ac1(t)}`;
     if (tm){
       const dep = sc.dep || {}, arr = sc.arr || {};
       const depS = hhmm(dep.runway || dep.revised || dep.sched), arrS = hhmm(arr.runway || arr.revised || arr.sched);
       const parts = [];
-      if (depS) parts.push(`dep <b>${depS}</b>`);
-      if (arrS) parts.push(`arr <b>${arrS}</b>`);
+      if (depS) parts.push(`Dep <b>${depS}</b>`);
+      if (arrS) parts.push(`Arr <b>${arrS}</b>`);
       const status = sc.status ? `<span class="badge">${sc.status}</span>` : "";
-      tm.innerHTML = (parts.length ? parts.join(" → ") + " <small>local</small> " : "") + status;
+      tm.innerHTML = (parts.length ? parts.join(" &nbsp;→&nbsp; ") + " <small>local</small> " : "") + status;
     }
-    paintAircraftMeta(rec.ac, en);
+    renderProgress(sc.from, sc.to, rec.planeLat, rec.planeLon);
+    paintAircraftMeta(rec.ac, rec.photo, en);
     return;
   }
   // Fallback: adsbdb "typical route" (may be a prior leg).
   al.textContent = rec.airline || "";
   if (rec.route && (rec.route.from || rec.route.to)){
     const f = rec.route.from, t = rec.route.to;
-    ro.innerHTML = `${f ? `<b>${f.code}</b> ${f.city}` : "—"}<span class="arr">→</span>${t ? `<b>${t.code}</b> ${t.city}` : "—"}`
-      + ` <span class="note" title="adsbdb stores one typical route per callsign; return legs or reused callsigns can differ from today's flight. Add an AeroDataBox key for live, accurate route + times.">· typical route (may differ today) ⓘ</span>`;
+    ro.innerHTML = `${f ? `<b>${f.code}</b> <span class="city">${f.city}</span>` : "—"}<span class="arr">→</span>${t ? `<b>${t.code}</b> <span class="city">${t.city}</span>` : "—"}`
+      + ` <span class="note" title="adsbdb stores one typical route per callsign; return legs or reused callsigns can differ from today's flight. Add an AeroDataBox key for live, accurate route + times.">· typical route ⓘ</span>`;
+    renderProgress(f, t, rec.planeLat, rec.planeLon);
   } else {
     ro.innerHTML = `<span class="note">No route on file for this callsign.</span>`;
+    renderProgress(null, null, null, null);
   }
-  paintAircraftMeta(rec.ac, en);
+  paintAircraftMeta(rec.ac, rec.photo, en);
 }
-function paintAircraftMeta(ac, en){
+function paintAircraftMeta(ac, photo, en){
   if (!en) return;
-  if (ac){
-    const owner = ac.registered_owner || "—";
-    const make = [ac.manufacturer, ac.type].filter(Boolean).join(" ");
-    const country = ac.registered_owner_country_name || "";
-    const photo = ac.url_photo_thumbnail || ac.url_photo;
-    en.innerHTML =
-      (photo ? `<a href="${ac.url_photo||photo}" target="_blank" rel="noopener"><img src="${photo}" alt="aircraft photo" onerror="this.style.display='none'"></a>` : "") +
-      `<div class="meta">
-        <div class="row"><span>Operator</span><b>${owner}</b></div>
-        <div class="row"><span>Aircraft</span><b>${make || ac.icao_type || "—"}</b></div>
-        <div class="row"><span>Registration</span><b>${ac.registration || "—"}</b></div>
-        <div class="row"><span>Registered in</span><b>${country || "—"}</b></div>
-      </div>`;
-  } else {
-    en.innerHTML = `<div class="meta"><div class="row"><span>Aircraft</span><b>No registry record</b></div></div>`;
+  let imgHtml = "";
+  if (photo && (photo.thumbnail_large || photo.thumbnail)){
+    const src = (photo.thumbnail_large || photo.thumbnail).src;
+    const link = photo.link || src;
+    const cred = photo.photographer ? `© ${photo.photographer} · planespotters.net` : "planespotters.net";
+    imgHtml = `<figure class="photo"><a href="${link}" target="_blank" rel="noopener"><img src="${src}" alt="aircraft photo" onerror="this.closest('figure').style.display='none'"></a><figcaption>${cred}</figcaption></figure>`;
+  } else if (ac && (ac.url_photo_thumbnail || ac.url_photo)){
+    const src = ac.url_photo_thumbnail || ac.url_photo;
+    imgHtml = `<figure class="photo"><a href="${ac.url_photo||src}" target="_blank" rel="noopener"><img src="${src}" alt="aircraft photo" onerror="this.closest('figure').style.display='none'"></a><figcaption>airport-data.com</figcaption></figure>`;
   }
+  const rows = ac ? `
+        <div class="row"><span>Operator</span><b>${ac.registered_owner || "—"}</b></div>
+        <div class="row"><span>Aircraft</span><b>${[ac.manufacturer, ac.type].filter(Boolean).join(" ") || ac.icao_type || "—"}</b></div>
+        <div class="row"><span>Registration</span><b>${ac.registration || "—"}</b></div>
+        <div class="row"><span>Registered in</span><b>${ac.registered_owner_country_name || "—"}</b></div>`
+    : `<div class="row"><span>Aircraft</span><b>No registry record</b></div>`;
+  en.innerHTML = imgHtml + `<div class="meta">${rows}</div>`;
 }
 
 // ---- "orienting" instrument: 3-D plane (CSS perspective) + altitude tape ----
@@ -645,33 +676,6 @@ function renderState(a){
     <span id="tapeWrap">${tapeSVG(alt, rate, phase==='ground')}</span>
   </div>
   <div class="aoa-note">AoA ≈ <b>${aoa.toFixed(0)}°</b> · flight path <b>${gamma>0?"+":""}${gamma.toFixed(0)}°</b> · nose <b>${pitch>0?"+":""}${pitch.toFixed(0)}°</b> · HDG <b>${Math.round(hdg)}° ${bearingName(hdg)}</b></div>`;
-}
-
-// ---- 0.5s interpolation: dead-reckon between fetches so the UI stays live ----
-function predict(){
-  if (!state.base || state.closestHex == null) return;
-  const dt = Math.min((Date.now() - state.base.t) / 1000, 30);  // cap extrapolation
-  const list = state.base.list;
-  const baseTop = list.find(x => x.hex === state.closestHex);
-  if (!baseTop) return;
-  const c = extrapolate(baseTop, dt);
-  const isGround = c.alt_baro === "ground";
-  const altN = isGround ? 0 : (typeof c.alt_baro === "number" ? c.alt_baro : 0);
-
-  const set = (id, v) => { const el = $(id); if (el != null && v != null) el.textContent = v; };
-  if (c.dst != null){ set("vDist", c.dst.toFixed(1)); set("vDistMi", (c.dst*NM_TO_MI).toFixed(1)); }
-  set("vAlt", isGround ? "GROUND" : Math.round(altN).toLocaleString());
-  if (c.dir != null){
-    const arrow = $("cArrow"), deg = $("cDeg"), d = Math.round(c.dir);
-    if (arrow) arrow.style.transform = `translate(-50%,-100%) rotate(${d}deg)`;
-    if (deg) deg.textContent = `${d}° ${bearingName(c.dir)}`;
-  }
-  const tw = $("tapeWrap");
-  if (tw) tw.innerHTML = tapeSVG(altN, vrate(baseTop) || 0, isGround);
-
-  // keep the radar blips drifting too (cheap; canvas redraws anyway)
-  const moved = list.map(x => extrapolate(x, dt)).sort((p,q)=>(p.dst??1e9)-(q.dst??1e9));
-  radar.setData(moved, moved[0]);
 }
 
 // ---- METAR weather, decoded into plain English ----
@@ -954,7 +958,6 @@ $("apply").onclick = () => {
 radar.init(); radar.start();
 refreshMetar();
 state.metarTimer = setInterval(refreshMetar, 300000);  // METAR updates ~hourly
-state.predictTimer = setInterval(predict, 500);        // dead-reckon between fetches
 // Default to HOME when this client has no saved location — so every device
 // (including phones over http, where geolocation is blocked) loads data at once.
 let atHome = false;

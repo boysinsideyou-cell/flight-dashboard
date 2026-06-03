@@ -1,7 +1,8 @@
 // Cloudflare Worker entry point (Workers + static-assets model).
 // Handles the /api/* proxy routes; everything else is served from ./public
 // via the ASSETS binding. Mirrors the local server.py endpoints exactly.
-const UA = "flight-dashboard/1.0 (personal; public ADS-B APIs)";
+// Descriptive UA with a contact URL — required by planespotters.net, polite elsewhere.
+const UA = "flight-dashboard/1.0 (+https://flight-dashboard.jeremy-fancher.workers.dev)";
 
 function jsonError(msg, status) {
   return new Response(JSON.stringify({ error: msg }), {
@@ -36,7 +37,9 @@ const jsonOk = (obj, ttl = 300) =>
 function adbAirport(side) {
   const a = side && side.airport;
   if (!a) return null;
-  return { iata: a.iata || null, icao: a.icao || null, name: a.shortName || a.name || null, city: a.municipalityName || null };
+  const loc = a.location || {};
+  return { iata: a.iata || null, icao: a.icao || null, name: a.shortName || a.name || null,
+    city: a.municipalityName || null, lat: loc.lat != null ? loc.lat : null, lon: loc.lon != null ? loc.lon : null };
 }
 function adbTimes(side) {
   if (!side) return null;
@@ -69,7 +72,7 @@ async function handleApi(url, env) {
     if (!hex) return jsonError("missing hex", 400);
     if (!env || !env.AERODATABOX_KEY) return jsonOk({ found: false, reason: "no_key" }, 60);
     const host = env.AERODATABOX_HOST || "aerodatabox.p.rapidapi.com";
-    const u = `https://${host}/flights/Icao24/${encodeURIComponent(hex)}?withAircraftImage=false&withLocation=false`;
+    const u = `https://${host}/flights/Icao24/${encodeURIComponent(hex)}?withAircraftImage=false&withLocation=true`;
     try {
       const r = await fetch(u, {
         headers: { "X-RapidAPI-Key": env.AERODATABOX_KEY, "X-RapidAPI-Host": host, accept: "application/json" },
@@ -92,6 +95,12 @@ async function handleApi(url, env) {
     if (!isFinite(lat) || !isFinite(lon)) return jsonError("bad lat/lon", 400);
     radius = Math.max(1, Math.min(radius || 50, 250));
     return proxy(`https://api.adsb.lol/v2/point/${lat}/${lon}/${radius}`, 5);
+  }
+  // Aircraft photo (planespotters.net, keyless; attribution required & shown).
+  if (p === "/api/photo") {
+    const hex = (q.get("hex") || "").trim();
+    if (!hex) return jsonError("missing hex", 400);
+    return proxy(`https://api.planespotters.net/pub/photos/hex/${encodeURIComponent(hex)}`, 86400);
   }
   if (p === "/api/callsign") {
     const cs = (q.get("cs") || "").trim().toUpperCase();

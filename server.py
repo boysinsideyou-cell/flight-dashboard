@@ -41,7 +41,7 @@ ADSB_BASE = "https://api.adsb.lol"          # live positions
 ADSBDB_BASE = "https://api.adsbdb.com/v0"   # airline / route / owner enrichment (keyless)
 METAR_BASE = "https://aviationweather.gov/api/data"  # NOAA/AWC METAR (keyless)
 # A descriptive User-Agent is good manners and avoids default-UA blocking.
-USER_AGENT = "flight-dashboard/1.0 (personal use; public ADS-B + AWC APIs)"
+USER_AGENT = "flight-dashboard/1.0 (+https://flight-dashboard.jeremy-fancher.workers.dev)"
 HERE = Path(__file__).resolve().parent
 
 # --- tiny in-memory cache so rapid polling doesn't hammer upstream APIs ---
@@ -92,7 +92,7 @@ def _schedule(hexid):
         return hit[1]
     host = os.environ.get("AERODATABOX_HOST", "aerodatabox.p.rapidapi.com")
     url = (f"https://{host}/flights/Icao24/{hexid}"
-           "?withAircraftImage=false&withLocation=false")
+           "?withAircraftImage=false&withLocation=true")
     req = urllib.request.Request(url, headers={
         "X-RapidAPI-Key": key, "X-RapidAPI-Host": host, "Accept": "application/json",
     })
@@ -111,8 +111,10 @@ def _schedule(hexid):
         a = (side or {}).get("airport") or {}
         if not a:
             return None
+        loc = a.get("location") or {}
         return {"iata": a.get("iata"), "icao": a.get("icao"),
-                "name": a.get("shortName") or a.get("name"), "city": a.get("municipalityName")}
+                "name": a.get("shortName") or a.get("name"), "city": a.get("municipalityName"),
+                "lat": loc.get("lat"), "lon": loc.get("lon")}
 
     def times(side):
         if not side:
@@ -208,6 +210,15 @@ class Handler(BaseHTTPRequestHandler):
             if not hexid:
                 return self._send(400, json.dumps({"error": "missing hex"}))
             return self._send(200, _schedule(hexid))
+
+        # Aircraft photo (planespotters.net, keyless; attribution shown in UI).
+        if path == "/api/photo":
+            hexid = parse_qs(parsed.query).get("hex", [""])[0].strip()
+            if not hexid:
+                return self._send(400, json.dumps({"error": "missing hex"}))
+            status, body = _cached(f"photo:{hexid}",
+                                   f"https://api.planespotters.net/pub/photos/hex/{hexid}", TTL_STATIC)
+            return self._send(status, body)
 
         return self._send(404, json.dumps({"error": "not found"}))
 
